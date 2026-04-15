@@ -26,11 +26,15 @@ export function generate(config: CodeOwnersConfig): string {
   // 1. Flatten ownership rules into individual path entries
   const flatEntries = flattenOwnership(ownRules);
 
-  // 2. Resolve direct ownership rules
+  // 2. Resolve direct ownership rules and sort by specificity (ascending)
+  //    so CODEOWNERS "last matching rule wins" works regardless of
+  //    declaration order. Stable sort preserves declaration order for
+  //    equal-specificity rules.
   const directRules: ResolvedRule[] = flatEntries.map((entry) => ({
     path: entry.path,
     owners: unique([...entry.owners, ...always]),
   }));
+  directRules.sort((a, b) => specificity(a.path) - specificity(b.path));
 
   // 3. Expand match rules across all owned paths
   const matchedRules = expandMatchRules(
@@ -190,5 +194,8 @@ function unique(arr: readonly Team[]): Team[] {
 }
 
 function formatRule(rule: ResolvedRule): string {
+  if (rule.owners.length === 0) {
+    return rule.path;
+  }
   return `${rule.path} ${rule.owners.join(" ")}`;
 }
