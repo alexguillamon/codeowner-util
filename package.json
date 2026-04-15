@@ -1,8 +1,12 @@
 {
   "name": "codeowners-util",
-  "version": "0.0.1",
+  "version": "0.0.2",
   "description": "Generate GitHub CODEOWNERS files from a typed config",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/alexguillamon/codeowner-util.git"
+  },
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
