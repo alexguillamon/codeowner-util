@@ -47,10 +47,20 @@ export function generate(
   // 4. Deduplicate: more specific pattern wins, equal specificity last wins
   const deduped = deduplicateBySpecificity(matchedRules);
 
+  // 4b. Reconcile: when a global match(only) pattern would override a direct
+  //     own() declaration, emit per-path rules that preserve the direct owners.
+  //     own() is the source of truth — match() cannot strip explicitly declared owners.
+  const reconciled = reconcileDirectOwnership(
+    deduped,
+    matchedRules,
+    flatEntries,
+    always,
+  );
+
   // 5. Remove rules subsumed by a broader pattern with identical owners
   //    e.g. **/locales/**/*.json already covers libs/air/locales/**/*.json
   //    when both have the same owners (typical with `only` rules + catch-all)
-  const pruned = removeSubsumedRules(deduped);
+  const pruned = removeSubsumedRules(reconciled);
 
   // 6. Sort match rules by specificity (ascending)
   pruned.sort((a, b) => specificity(a.path) - specificity(b.path));
@@ -133,6 +143,8 @@ interface ExpandedMatch {
   resolvedPath: string;
   owners: Team[];
   sourcePattern: string;
+  /** Whether this match came from a match(only) rule */
+  isOnly: boolean;
 }
 
 /**
@@ -155,19 +167,20 @@ function expandMatchRules(
 
   for (const rule of matchRules) {
     const ownedDirPaths = new Set<string>();
+    const isOnly = "only" in rule;
 
     for (const entry of flatEntries) {
       if (entry.path === "*") {
         // Catch-all always produces global pattern
         const resolved = resolvePattern(entry.path, rule.pattern);
-        const owners: Team[] =
-          "only" in rule
-            ? unique([...rule.only, ...always])
-            : unique([...entry.owners, ...rule.add, ...always]);
+        const owners: Team[] = isOnly
+          ? unique([...rule.only, ...always])
+          : unique([...entry.owners, ...rule.add, ...always]);
         results.push({
           resolvedPath: resolved,
           owners,
           sourcePattern: rule.pattern,
+          isOnly,
         });
         continue;
       }
@@ -181,15 +194,15 @@ function expandMatchRules(
       const resolved = resolvePattern(entry.path, rule.pattern);
       if (!hasMatchingPath(resolved, rootDir, fs)) continue;
 
-      const owners: Team[] =
-        "only" in rule
-          ? unique([...rule.only, ...always])
-          : unique([...entry.owners, ...rule.add, ...always]);
+      const owners: Team[] = isOnly
+        ? unique([...rule.only, ...always])
+        : unique([...entry.owners, ...rule.add, ...always]);
 
       results.push({
         resolvedPath: resolved,
         owners,
         sourcePattern: rule.pattern,
+        isOnly,
       });
     }
 
@@ -204,15 +217,15 @@ function expandMatchRules(
 
       const parentOwners = findOwners(dir, flatEntries);
       const resolved = resolvePattern(dir, rule.pattern);
-      const owners: Team[] =
-        "only" in rule
-          ? unique([...rule.only, ...always])
-          : unique([...parentOwners, ...rule.add, ...always]);
+      const owners: Team[] = isOnly
+        ? unique([...rule.only, ...always])
+        : unique([...parentOwners, ...rule.add, ...always]);
 
       results.push({
         resolvedPath: resolved,
         owners,
         sourcePattern: rule.pattern,
+        isOnly,
       });
     }
   }
@@ -414,6 +427,117 @@ function deduplicateBySpecificity(matches: ExpandedMatch[]): ResolvedRule[] {
     path: m.resolvedPath,
     owners: m.owners,
   }));
+}
+
+/**
+ * Reconcile match(only) rules with direct own() declarations.
+ *
+ * When a global match pattern (e.g. ** /features/checkout/**) with `only`
+ * semantics would override a path that has explicit direct ownership, we
+ * emit an additional per-path rule that merges the match's owners with
+ * the directly declared owners. Because this per-path rule has higher
+ * specificity, it wins in GitHub's last-match-wins evaluation — preserving
+ * the direct ownership while still applying the match rule's intent.
+ *
+ * own() is the source of truth and cannot be overridden by match().
+ */
+function reconcileDirectOwnership(
+  deduped: ResolvedRule[],
+  expanded: ExpandedMatch[],
+  flatEntries: FlatEntry[],
+  always: readonly Team[],
+): ResolvedRule[] {
+  // Identify global patterns that came from match(only) rules
+  const globalOnlyPaths = new Set<string>();
+  const globalPathToSource = new Map<string, string>();
+  for (const m of expanded) {
+    if (m.resolvedPath.startsWith("**/")) {
+      globalPathToSource.set(m.resolvedPath, m.sourcePattern);
+      if (m.isOnly) {
+        globalOnlyPaths.add(m.resolvedPath);
+      }
+    }
+  }
+
+  // Only reconcile global rules that came from match(only) — add rules already preserve owners
+  const globalOnlyRules = deduped.filter(
+    (r) => r.path.startsWith("**/") && globalOnlyPaths.has(r.path),
+  );
+
+  if (globalOnlyRules.length === 0) return deduped;
+
+  const result = [...deduped];
+
+  for (const globalRule of globalOnlyRules) {
+    const suffix = globalRule.path.slice(3); // strip "**/"
+    // suffix might be "features/checkout/**" or "locales/**/*.json"
+    // Extract the directory part (before any trailing glob)
+    const dirSuffix = extractDirSuffix(suffix);
+    if (!dirSuffix) continue;
+
+    const sourcePattern = globalPathToSource.get(globalRule.path) ?? globalRule.path;
+
+    for (const entry of flatEntries) {
+      if (entry.path === "*") continue;
+
+      // Check if this owned path falls under the global pattern
+      if (
+        entry.path.endsWith(dirSuffix) ||
+        entry.path.endsWith("/" + dirSuffix)
+      ) {
+        // This direct owned path would be matched by the global pattern.
+        // Check if the global rule is missing any of the direct owners.
+        const directOwners = unique([...entry.owners, ...always]);
+        const missingOwners = directOwners.filter(
+          (o) => !globalRule.owners.includes(o),
+        );
+
+        if (missingOwners.length > 0) {
+          // Emit a per-path rule that preserves the direct owners.
+          // The glob tail is the part of the suffix after the directory anchor
+          // e.g. suffix "features/checkout/**" with dirSuffix "features/checkout"
+          //      → globTail = "/**" → reconciledPath = "apps/portal/config/features/checkout/**"
+          const globTail = suffix.slice(dirSuffix.length);
+          const reconciledPath = `${entry.path}${globTail}`;
+          const reconciledOwners = unique([
+            ...globalRule.owners,
+            ...directOwners,
+          ]);
+
+          result.push({
+            path: reconciledPath,
+            owners: reconciledOwners,
+          });
+
+          // Also track in expanded matches so groupByPattern can find the source pattern
+          expanded.push({
+            resolvedPath: reconciledPath,
+            owners: reconciledOwners,
+            sourcePattern,
+            isOnly: true,
+          });
+        }
+      }
+    }
+  }
+
+  return result;
+}
+
+/**
+ * Extract the non-glob directory suffix from a pattern.
+ * "features/checkout/**" → "features/checkout"
+ * "locales/**\/*.json" → "locales"
+ * "*.json" → null (no directory component)
+ */
+function extractDirSuffix(suffix: string): string | null {
+  const segments = suffix.split("/");
+  const dirSegments: string[] = [];
+  for (const seg of segments) {
+    if (seg.includes("*") || seg.includes("?")) break;
+    dirSegments.push(seg);
+  }
+  return dirSegments.length > 0 ? dirSegments.join("/") : null;
 }
 
 /**
