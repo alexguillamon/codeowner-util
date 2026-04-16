@@ -296,14 +296,17 @@ describe("generate() with rootDir (filesystem-aware)", () => {
 
     const output = generate(config, { rootDir: "/repo", fs: vol as any });
 
-    // libs/search: inherits teamA + adds i18n
+    // libs/search: inherits teamA + adds i18n — different owners than global,
+    // so this per-path rule is NOT redundant and must appear
     expect(output).toContain(
       "libs/search/locales/en-US/**/*.json @org/team-a @org/i18n @ci-bot",
     );
-    // libs/new-thing: inherits from * (platform) + adds i18n
+    // libs/new-thing: inherits from * (platform) + adds i18n — SAME owners
+    // as the global pattern, so it's subsumed and pruned. The global covers it.
     expect(output).toContain(
-      "libs/new-thing/locales/en-US/**/*.json @org/platform @org/i18n @ci-bot",
+      "**/locales/en-US/**/*.json @org/platform @org/i18n @ci-bot",
     );
+    expect(output).not.toContain("libs/new-thing");
   });
 
   test("no redundant global + per-path rules when catch-all exists with only", () => {
@@ -369,7 +372,10 @@ describe("generate() with rootDir (filesystem-aware)", () => {
 
     const output = generate(config, { rootDir: "/repo", fs: vol as any });
 
-    expect(output).toContain("libs/search/locales/**/*.json");
+    // Global pattern from catch-all covers everything;
+    // per-path rules with identical owners are pruned as redundant.
+    // The key check: no node_modules, dotfiles, or zod in output.
+    expect(output).toContain("**/locales/**/*.json @org/i18n @ci-bot");
     expect(output).not.toContain("node_modules");
     expect(output).not.toContain(".opencode");
     expect(output).not.toContain(".cache");
