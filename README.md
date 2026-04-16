@@ -1,6 +1,6 @@
 # codeowners-util
 
-GitHub's CODEOWNERS format is a flat file where rule ordering determines who actually owns what. The last matching rule wins. This makes it hard to reason about ownership in a monorepo — you can't tell at a glance who owns what, and changing one line can silently break ownership for something completely unrelated.
+GitHub's CODEOWNERS leaves a lot to desire and lacks a lot of features one would want to create fine grained rules about who owns what in a monorepo.
 
 This library lets you define ownership in TypeScript. You describe who owns what and why. The library generates a correct CODEOWNERS file with rules sorted so GitHub's last-match-wins semantics produce the right result.
 
@@ -8,21 +8,21 @@ This library lets you define ownership in TypeScript. You describe who owns what
 
 There are two layers to ownership:
 
-**`own()` is the source of truth.** It's a direct declaration: these teams own these paths. If two teams both call `own()` on the same path, they share it. Nothing else in the system can remove an `own()` declaration.
+`own()` is the source of truth. It's a direct declaration: these teams own these paths. If two teams both call `own()` on the same path, they share it. Nothing else in the system can remove an `own()` declaration.
 
-**`match()` is for cross-cutting patterns.** Things like "all locale files should be reviewed by the i18n team." Match rules operate on file patterns within owned directories. They can add reviewers on top of existing ownership, or replace inherited ownership — but they can't strip teams that were explicitly declared with `own()`.
+`match()` is for cross-cutting patterns. Things like "all locale files should be reviewed by the i18n team." Match rules operate on file patterns within owned directories. They can add reviewers on top of existing ownership, or replace inherited ownership, but they can't strip teams that were explicitly declared with `own()`.
 
 ### The rules
 
-1. **`own()` declarations merge.** Two `own()` calls on the same path? Both teams are co-owners.
+1. `own()` declarations merge. Two `own()` calls on the same path? Both teams are co-owners.
 
-2. **`match(add)` stacks.** Adds teams on top of whoever owns the directory.
+2. `match(add)` stacks. Adds teams on top of whoever owns the directory.
 
-3. **`match(only)` replaces inherited owners** — but not direct ones. If a directory's ownership comes from a parent (inherited), `only` replaces it. If the path has its own `own()` declaration, those owners stay.
+3. `match(only)` replaces inherited owners, but not direct ones. If a directory's ownership comes from a parent (inherited), `only` replaces it. If the path has its own `own()` declaration, those owners stay.
 
-4. **`always` is unconditional.** Teams listed here are appended to every rule. Useful for bot accounts.
+4. `always` is unconditional. Teams listed here are appended to every rule. Useful for bot accounts.
 
-5. **Specificity resolves conflicts.** When two match rules hit the same path, the more specific pattern wins. Same specificity? Last declared wins.
+5. Specificity resolves conflicts. When two match rules hit the same path, the more specific pattern wins. Same specificity? Last declared wins.
 
 ## Install
 
@@ -51,8 +51,16 @@ const config: CodeOwnersConfig = {
     "@org/i18n": "Internationalization",
   },
   own: [
-    own(platform, ["*", "apps/web", "libs/config"], "Platform owns the foundation"),
-    own(search, ["libs/search", "libs/search-api"], "Search team owns search libs"),
+    own(
+      platform,
+      ["*", "apps/web", "libs/config"],
+      "Platform owns the foundation",
+    ),
+    own(
+      search,
+      ["libs/search", "libs/search-api"],
+      "Search team owns search libs",
+    ),
     own([search, platform], "apps/web/src/routes/search.ts"),
   ],
   match: [
@@ -100,7 +108,7 @@ own(teamB, "libs/core");
 
 Match rules apply file-level patterns across owned directories.
 
-**`add`** adds teams on top of whoever owns the directory:
+`add` adds teams on top of whoever owns the directory:
 
 ```typescript
 match("**/locales/en-US/**/*.json", { add: [i18n] });
@@ -108,7 +116,7 @@ match("**/locales/en-US/**/*.json", { add: [i18n] });
 // libs/search/locales/en-US/**/*.json → @org/search @org/i18n
 ```
 
-**`only`** replaces inherited ownership for matching files:
+`only` replaces inherited ownership for matching files:
 
 ```typescript
 match("**/locales/**/*.json", { only: [i18n] });
@@ -123,7 +131,7 @@ match("**/features/checkout/**", { only: [checkout] });
 
 // Files inside apps/web/config/features/checkout/:
 //   → @org/checkout @org/platform
-//   platform was directly declared with own() — it stays
+//   platform was directly declared with own(), it stays
 //
 // Files inside any OTHER features/checkout/ directory:
 //   → @org/checkout only
@@ -139,7 +147,7 @@ Owned path: libs/search
 Resolved:   libs/search/locales/**/*.json
 ```
 
-When there's a catch-all `*` owner, the pattern also stays global (`**/locales/**/*.json`), which covers any directory — including ones not declared in `own()`.
+When there's a catch-all `*` owner, the pattern also stays global (`**/locales/**/*.json`), which covers any directory, including ones not declared in `own()`.
 
 The generator uses the filesystem to verify that resolved pattern paths actually exist. If `libs/search` doesn't have a `locales` directory, no rule is emitted for it. It also walks the filesystem to discover directories that match the pattern but weren't declared in `own()`. For those discovered directories, ownership is inherited from the most specific parent that was declared with `own()`.
 
@@ -184,7 +192,11 @@ Shows up in section headers:
 ### Ownership descriptions
 
 ```typescript
-own(platform, ["*", "libs/config"], "Platform owns the foundation and shared config");
+own(
+  platform,
+  ["*", "libs/config"],
+  "Platform owns the foundation and shared config",
+);
 ```
 
 Rendered above the group:
@@ -201,7 +213,8 @@ libs/config @org/platform @ci-bot
 ```typescript
 match("**/locales/**/*.json", {
   only: [i18n],
-  description: "All locale files are reviewed by i18n — product teams opt in via en-US",
+  description:
+    "All locale files are reviewed by i18n, product teams opt in via en-US",
 });
 ```
 
@@ -209,7 +222,7 @@ Rendered below the match header:
 
 ```
 # ── Match: **/locales/**/*.json ──
-# All locale files are reviewed by i18n — product teams opt in via en-US
+# All locale files are reviewed by i18n, product teams opt in via en-US
 ```
 
 ## CLI
@@ -252,8 +265,8 @@ Creates a pattern-based rule. `opts` must include either `{ add: [...] }` or `{ 
 
 Returns the generated CODEOWNERS content as a string.
 
-- `rootDir` — root directory for filesystem-aware resolution (default: `process.cwd()`)
-- `fs` — custom filesystem implementation for testing (default: `node:fs`)
+- `rootDir` - root directory for filesystem-aware resolution (default: `process.cwd()`)
+- `fs` - custom filesystem implementation for testing (default: `node:fs`)
 
 ### `write(config, options)`
 
@@ -262,7 +275,7 @@ Writes the CODEOWNERS file to disk.
 ```typescript
 write(config, { outputPath: ".github/CODEOWNERS" });
 
-// Check mode — compare without writing
+// Check mode, compare without writing
 const result = write(config, {
   outputPath: ".github/CODEOWNERS",
   check: true,
