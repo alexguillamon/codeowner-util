@@ -37,3 +37,19 @@ export interface ResolvedRule {
   readonly path: string;
   readonly owners: readonly Team[];
 }
+
+/** Minimal filesystem interface for filesystem-aware generation */
+export interface FsLike {
+  statSync(path: string): { isDirectory(): boolean };
+  readdirSync(
+    path: string,
+    options: { withFileTypes: true; recursive: true },
+  ): readonly { name: string; parentPath: string; isDirectory(): boolean }[];
+}
+
+export interface GenerateOptions {
+  /** Root directory for filesystem-aware match resolution */
+  rootDir?: string;
+  /** Custom fs implementation (defaults to node:fs). Pass memfs for testing. */
+  fs?: FsLike;
+}

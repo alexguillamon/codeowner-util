@@ -1,13 +1,15 @@
 import { writeFileSync, readFileSync, mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { generate } from "./generate.js";
-import type { CodeOwnersConfig } from "./types.js";
+import type { CodeOwnersConfig, GenerateOptions } from "./types.js";
 
 export interface WriteOptions {
   /** Path to write the CODEOWNERS file */
   outputPath: string;
   /** If true, compare against existing file instead of writing */
   check?: boolean;
+  /** Root directory for filesystem-aware match resolution */
+  rootDir?: string;
 }
 
 export interface WriteResult {
@@ -29,7 +31,10 @@ export function write(
   config: CodeOwnersConfig,
   options: WriteOptions,
 ): WriteResult {
-  const content = generate(config);
+  const genOpts: GenerateOptions | undefined = options.rootDir
+    ? { rootDir: options.rootDir }
+    : undefined;
+  const content = generate(config, genOpts);
 
   if (options.check) {
     try {

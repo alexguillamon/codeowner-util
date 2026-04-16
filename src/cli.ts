@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { resolve } from "node:path";
+import { resolve, dirname } from "node:path";
 import { write } from "./write.js";
 
 const DEFAULTS = {
@@ -95,9 +95,13 @@ async function main(): Promise<void> {
     process.exit(2);
   }
 
+  const rootDir = dirname(configPath);
+
   if (opts.stdout) {
     const { generate } = await import("./generate.js");
-    const content = generate(config as Parameters<typeof generate>[0]);
+    const content = generate(config as Parameters<typeof generate>[0], {
+      rootDir,
+    });
     process.stdout.write(content);
     return;
   }
@@ -105,6 +109,7 @@ async function main(): Promise<void> {
   const outputPath = resolve(opts.output);
   const result = write(config as Parameters<typeof write>[0], {
     outputPath,
+    rootDir,
     check: opts.check,
   });
 

@@ -1,5 +1,9 @@
+import * as nodeFs from "node:fs";
+import { join, relative } from "node:path";
 import type {
   CodeOwnersConfig,
+  FsLike,
+  GenerateOptions,
   MatchRule,
   OwnershipRule,
   ResolvedRule,
@@ -9,47 +13,41 @@ import type {
 /**
  * Generate CODEOWNERS file content from a config.
  *
- * The algorithm:
- * 1. Emit direct ownership rules in declaration order
- * 2. For each match rule, expand it against every owned path
- *    - `add`: owners = parent owners + add owners + always
- *    - `only`: owners = only owners + always
- * 3. When multiple match rules overlap on the same resolved path,
- *    the more specific pattern wins (by segment count)
- * 4. Sort match output by specificity (ascending) so CODEOWNERS
- *    "last matching rule wins" semantics work correctly
+ * Match rules are resolved against the actual filesystem — only emitting
+ * rules for directories that contain matching files, and discovering
+ * directories not declared in `own()`.
  */
-export function generate(config: CodeOwnersConfig): string {
+export function generate(
+  config: CodeOwnersConfig,
+  options?: GenerateOptions,
+): string {
   const always = config.always ?? [];
-  const ownRules = config.own;
+  const rootDir = options?.rootDir ?? process.cwd();
+  const fs = options?.fs ?? (nodeFs as unknown as FsLike);
 
-  // 1. Flatten ownership rules into individual path entries
-  const flatEntries = flattenOwnership(ownRules);
+  // 1. Flatten ownership rules, normalizing paths
+  const flatEntries = flattenOwnership(config.own);
 
-  // 2. Resolve direct ownership rules and sort by specificity (ascending)
-  //    so CODEOWNERS "last matching rule wins" works regardless of
-  //    declaration order. Stable sort preserves declaration order for
-  //    equal-specificity rules.
+  // 2. Resolve direct ownership rules, sorted by specificity (ascending)
   const directRules: ResolvedRule[] = flatEntries.map((entry) => ({
     path: entry.path,
     owners: unique([...entry.owners, ...always]),
   }));
   directRules.sort((a, b) => specificity(a.path) - specificity(b.path));
 
-  // 3. Expand match rules across all owned paths
+  // 3. Expand match rules against the filesystem
   const matchedRules = expandMatchRules(
     config.match ?? [],
     flatEntries,
     always,
+    rootDir,
+    fs,
   );
 
-  // 4. Deduplicate: when multiple match rules resolve to the same path,
-  //    the more specific pattern wins
+  // 4. Deduplicate: more specific pattern wins, equal specificity last wins
   const deduped = deduplicateBySpecificity(matchedRules);
 
-  // 5. Sort match rules by specificity (ascending) so CODEOWNERS
-  //    "last matching rule wins" semantics work correctly.
-  //    Less specific rules come first, more specific ones override.
+  // 5. Sort match rules by specificity (ascending)
   deduped.sort((a, b) => specificity(a.path) - specificity(b.path));
 
   // 6. Combine and format
@@ -71,20 +69,25 @@ interface FlatEntry {
   owners: Team[];
 }
 
+/** Normalize a path: strip trailing slashes */
+function normalizePath(p: string): string {
+  if (p === "/" || p === "*") return p;
+  return p.replace(/\/+$/, "");
+}
+
 /**
  * Flatten ownership rules into one entry per unique path.
- * When multiple rules declare ownership over the same path,
- * their owners are merged automatically (implicit co-ownership).
+ * Normalizes paths and merges co-ownership automatically.
  */
 function flattenOwnership(rules: readonly OwnershipRule[]): FlatEntry[] {
   const byPath = new Map<string, FlatEntry>();
   const order: string[] = [];
 
   for (const rule of rules) {
-    for (const path of rule.paths) {
+    for (const rawPath of rule.paths) {
+      const path = normalizePath(rawPath);
       const existing = byPath.get(path);
       if (existing) {
-        // Merge owners — implicit co-ownership
         for (const owner of rule.owners) {
           if (!existing.owners.includes(owner)) {
             existing.owners.push(owner);
@@ -98,35 +101,88 @@ function flattenOwnership(rules: readonly OwnershipRule[]): FlatEntry[] {
     }
   }
 
-  // Preserve first-seen declaration order
   return order.map((path) => byPath.get(path)!);
 }
 
 interface ExpandedMatch {
   resolvedPath: string;
   owners: Team[];
-  /** The original match pattern, used for specificity comparison */
   sourcePattern: string;
 }
 
+/**
+ * Expand match rules against the filesystem.
+ *
+ * For each match rule:
+ * 1. Catch-all `*` always produces a global pattern
+ * 2. For each owned path, check the filesystem: is it a directory whose
+ *    resolved pattern prefix exists? If so, emit the rule.
+ * 3. Discover directories on disk that match but aren't declared in own().
+ */
 function expandMatchRules(
   matchRules: readonly MatchRule[],
   flatEntries: FlatEntry[],
   always: readonly Team[],
+  rootDir: string,
+  fs: FsLike,
 ): ExpandedMatch[] {
   const results: ExpandedMatch[] = [];
 
   for (const rule of matchRules) {
-    for (const entry of flatEntries) {
-      const resolved = resolvePattern(entry.path, rule.pattern);
+    const ownedDirPaths = new Set<string>();
 
-      let owners: Team[];
-      if ("only" in rule) {
-        owners = unique([...rule.only, ...always]);
-      } else {
-        // `add` inherits the parent owners
-        owners = unique([...entry.owners, ...rule.add, ...always]);
+    for (const entry of flatEntries) {
+      if (entry.path === "*") {
+        // Catch-all always produces global pattern
+        const resolved = resolvePattern(entry.path, rule.pattern);
+        const owners: Team[] =
+          "only" in rule
+            ? unique([...rule.only, ...always])
+            : unique([...entry.owners, ...rule.add, ...always]);
+        results.push({
+          resolvedPath: resolved,
+          owners,
+          sourcePattern: rule.pattern,
+        });
+        continue;
       }
+
+      // Is this a directory on disk?
+      if (!isDirectory(join(rootDir, entry.path), fs)) continue;
+
+      ownedDirPaths.add(entry.path);
+
+      // Does the resolved pattern's directory prefix exist?
+      const resolved = resolvePattern(entry.path, rule.pattern);
+      if (!hasMatchingPath(resolved, rootDir, fs)) continue;
+
+      const owners: Team[] =
+        "only" in rule
+          ? unique([...rule.only, ...always])
+          : unique([...entry.owners, ...rule.add, ...always]);
+
+      results.push({
+        resolvedPath: resolved,
+        owners,
+        sourcePattern: rule.pattern,
+      });
+    }
+
+    // Discover directories with matching files not in own()
+    const discoveredDirs = findMatchingDirectories(
+      rule.pattern,
+      rootDir,
+      fs,
+    );
+    for (const dir of discoveredDirs) {
+      if (ownedDirPaths.has(dir)) continue;
+
+      const parentOwners = findOwners(dir, flatEntries);
+      const resolved = resolvePattern(dir, rule.pattern);
+      const owners: Team[] =
+        "only" in rule
+          ? unique([...rule.only, ...always])
+          : unique([...parentOwners, ...rule.add, ...always]);
 
       results.push({
         resolvedPath: resolved,
@@ -139,10 +195,134 @@ function expandMatchRules(
   return results;
 }
 
+/** Check if a path is a directory on disk */
+function isDirectory(absPath: string, fs: FsLike): boolean {
+  try {
+    return fs.statSync(absPath).isDirectory();
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Check if a resolved pattern could match files on disk by verifying
+ * that its non-glob directory prefix exists.
+ *
+ * "libs/search/locales/en/sample.json" → check "libs/search/locales/en"
+ * "libs/search/.env*" → check "libs/search"
+ */
+function hasMatchingPath(
+  resolvedPattern: string,
+  rootDir: string,
+  fs: FsLike,
+): boolean {
+  const segments = resolvedPattern.split("/");
+  const dirSegments: string[] = [];
+  for (const seg of segments) {
+    if (seg.includes("*") || seg.includes("?")) break;
+    dirSegments.push(seg);
+  }
+  // Remove the last segment if it's a filename (the directory is its parent)
+  if (dirSegments.length > 0) {
+    const last = dirSegments[dirSegments.length - 1];
+    if (last.includes(".")) {
+      dirSegments.pop();
+    }
+  }
+  const dirPath = dirSegments.join("/");
+  if (!dirPath) return true; // pattern starts with glob — always matches
+  return isDirectory(join(rootDir, dirPath), fs);
+}
+
+/**
+ * Find all directories (relative to rootDir) that contain files matching
+ * the given pattern. Extracts the directory anchor from the pattern and
+ * searches the filesystem for it.
+ */
+function findMatchingDirectories(
+  pattern: string,
+  rootDir: string,
+  fs: FsLike,
+): Set<string> {
+  const dirs = new Set<string>();
+
+  // Extract the searchable directory anchor from the pattern.
+  // "**/locales/en-US/**/*.json" → "locales/en-US"
+  // "**/locales/**/*.json" → "locales"
+  // "**/.env*" → "" (no anchor)
+  const stripped = pattern.startsWith("**/") ? pattern.slice(3) : pattern;
+  const segments = stripped.split("/");
+  const anchorSegments: string[] = [];
+  for (const seg of segments) {
+    if (seg.includes("*") || seg.includes("?")) break;
+    anchorSegments.push(seg);
+  }
+  const anchor = anchorSegments.join("/");
+
+  if (!anchor) {
+    // No directory anchor (e.g. "**/.env*"). Discovery isn't meaningful —
+    // owned directories are already checked individually via hasMatchingPath,
+    // and catch-all * handles the global pattern.
+    return dirs;
+  }
+
+  // Walk the filesystem looking for directories matching the anchor
+  try {
+    const entries = fs.readdirSync(rootDir, {
+      withFileTypes: true,
+      recursive: true,
+    });
+    for (const entry of entries) {
+      if (!entry.isDirectory()) continue;
+      const rel = relative(rootDir, join(entry.parentPath, entry.name));
+      if (rel.endsWith(anchor) || rel.includes(`/${anchor}`)) {
+        const anchorIdx = rel.indexOf(anchor);
+        const parent = rel.slice(0, anchorIdx).replace(/\/$/, "");
+        if (parent) {
+          dirs.add(parent);
+        }
+      }
+    }
+  } catch {
+    // rootDir doesn't exist or can't be read
+  }
+
+  return dirs;
+}
+
+/**
+ * Find the owners for a path by matching against the most specific owned
+ * prefix. Falls back to catch-all `*` if nothing else matches.
+ */
+function findOwners(path: string, flatEntries: FlatEntry[]): Team[] {
+  let bestMatch: FlatEntry | undefined;
+  let bestLen = -1;
+
+  for (const entry of flatEntries) {
+    if (entry.path === "*") {
+      if (bestLen < 0) {
+        bestMatch = entry;
+        bestLen = 0;
+      }
+      continue;
+    }
+    if (
+      path === entry.path ||
+      path.startsWith(entry.path + "/")
+    ) {
+      if (entry.path.length > bestLen) {
+        bestMatch = entry;
+        bestLen = entry.path.length;
+      }
+    }
+  }
+
+  return bestMatch ? [...bestMatch.owners] : [];
+}
+
 /**
  * When multiple match rules produce the same resolved path,
- * the rule with the more specific source pattern wins.
- * When specificity is equal, the later declaration wins.
+ * the more specific source pattern wins. Equal specificity: last wins.
  */
 function deduplicateBySpecificity(matches: ExpandedMatch[]): ResolvedRule[] {
   const byPath = new Map<string, ExpandedMatch>();
@@ -165,22 +345,16 @@ function deduplicateBySpecificity(matches: ExpandedMatch[]): ResolvedRule[] {
 
 /**
  * Resolve a match pattern relative to an owned path.
- *
- * If the pattern starts with "**\/", it's scoped under the owned path:
- *   resolvePattern("libs/foo", "**\/locales/**\/*.json")
- *   → "libs/foo/locales/**\/*.json"
- *
- * If the owned path is "*" (catch-all), the pattern stays global.
+ * A leading double-star-slash prefix is stripped and scoped under the
+ * owned path. Catch-all `*` keeps the pattern global.
  */
 function resolvePattern(ownedPath: string, pattern: string): string {
   if (ownedPath === "*") {
     return pattern;
   }
-
   if (pattern.startsWith("**/")) {
     return `${ownedPath}/${pattern.slice(3)}`;
   }
-
   return `${ownedPath}/${pattern}`;
 }
 

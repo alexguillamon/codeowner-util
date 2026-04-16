@@ -1,6 +1,7 @@
 import { describe, expect, test, beforeEach, afterEach } from "bun:test";
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { Volume } from "memfs";
 import { team, own, match, generate, write } from "../src/index.js";
 import type { CodeOwnersConfig, Team } from "../src/index.js";
 
@@ -233,5 +234,117 @@ describe("CLI", () => {
     expect(proc.exitCode).toBe(0);
     expect(stdout).toContain("--config");
     expect(stdout).toContain("--output");
+  });
+});
+
+// ── filesystem-aware generation (memfs) ─────────────────
+
+function createVolume(files: Record<string, string>) {
+  const vol = Volume.fromJSON(files, "/repo");
+  return vol;
+}
+
+describe("generate() with rootDir (filesystem-aware)", () => {
+  const platform = team("@org/platform");
+  const teamA = team("@org/team-a");
+  const teamB = team("@org/team-b");
+  const i18n = team("@org/i18n");
+  const bot = team("@ci-bot");
+
+  test("match rules only emit for directories that actually contain matching files", () => {
+    // libs/search has locales, libs/config does NOT
+    const vol = createVolume({
+      "libs/search/src/index.ts": "",
+      "libs/search/locales/en-US/common.json": "{}",
+      "libs/config/src/index.ts": "",
+      // libs/config has no locales/ directory
+    });
+
+    const config: CodeOwnersConfig = {
+      always: [bot],
+      own: [
+        own(teamA, "libs/search"),
+        own(platform, "libs/config"),
+      ],
+      match: [match("**/locales/**/*.json", { only: [i18n] })],
+    };
+
+    const output = generate(config, { rootDir: "/repo", fs: vol as any });
+
+    // Should emit locale rule for libs/search (locales exist)
+    expect(output).toContain("libs/search/locales/**/*.json");
+    // Should NOT emit locale rule for libs/config (no locales dir)
+    expect(output).not.toContain("libs/config/locales");
+  });
+
+  test("match rules discover directories NOT declared in own()", () => {
+    // libs/new-thing has locales but is not in any own() rule.
+    // The catch-all * covers it, so it should get platform as parent.
+    const vol = createVolume({
+      "libs/search/locales/en-US/common.json": "{}",
+      "libs/new-thing/locales/en-US/common.json": "{}",
+    });
+
+    const config: CodeOwnersConfig = {
+      always: [bot],
+      own: [
+        own(platform, "*"),
+        own(teamA, "libs/search"),
+      ],
+      match: [match("**/locales/en-US/**/*.json", { add: [i18n] })],
+    };
+
+    const output = generate(config, { rootDir: "/repo", fs: vol as any });
+
+    // libs/search: inherits teamA + adds i18n
+    expect(output).toContain(
+      "libs/search/locales/en-US/**/*.json @org/team-a @org/i18n @ci-bot",
+    );
+    // libs/new-thing: inherits from * (platform) + adds i18n
+    expect(output).toContain(
+      "libs/new-thing/locales/en-US/**/*.json @org/platform @org/i18n @ci-bot",
+    );
+  });
+
+  test("no redundant global + per-path rules when catch-all exists with only", () => {
+    const vol = createVolume({
+      "libs/search/locales/en-US/common.json": "{}",
+      "libs/billing/locales/en-US/common.json": "{}",
+    });
+
+    const config: CodeOwnersConfig = {
+      own: [
+        own(platform, "*"),
+        own(teamA, "libs/search"),
+        own(teamB, "libs/billing"),
+      ],
+      match: [match("**/locales/**/*.json", { only: [i18n] })],
+    };
+
+    const output = generate(config, { rootDir: "/repo", fs: vol as any });
+    const lines = output.split("\n").filter((l) => l.includes("locales"));
+
+    // No nonsensical paths, no double slashes
+    for (const line of lines) {
+      expect(line).not.toContain("//");
+      expect(line).not.toMatch(/\.ts\//);
+    }
+  });
+
+  test("trailing-slash paths produce clean output with filesystem", () => {
+    const vol = createVolume({
+      "data/locales/en-US/products.json": "{}",
+    });
+
+    const config: CodeOwnersConfig = {
+      own: [own(platform, "data/")],
+      match: [match("**/locales/**/*.json", { only: [i18n] })],
+    };
+
+    const output = generate(config, { rootDir: "/repo", fs: vol as any });
+
+    // No double slashes
+    expect(output).not.toContain("//");
+    expect(output).toContain("data/locales/**/*.json");
   });
 });

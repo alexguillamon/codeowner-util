@@ -9,5 +9,7 @@ export type {
   MatchOnly,
   CodeOwnersConfig,
   ResolvedRule,
+  FsLike,
+  GenerateOptions,
 } from "./types.js";
 export type { WriteOptions, WriteResult } from "./write.js";
