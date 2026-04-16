@@ -235,9 +235,45 @@ function hasMatchingPath(
 }
 
 /**
+ * Load ignore patterns from .gitignore + built-in defaults.
+ * Returns a set of directory names/patterns to skip during traversal.
+ */
+function loadIgnorePatterns(rootDir: string, fs: FsLike): Set<string> {
+  // Always ignore these
+  const patterns = new Set(["node_modules", ".git"]);
+
+  try {
+    const content = fs.readFileSync(join(rootDir, ".gitignore"), "utf-8");
+    for (const raw of content.split("\n")) {
+      const line = raw.trim();
+      if (!line || line.startsWith("#") || line.startsWith("!")) continue;
+      // Strip trailing slash and leading slash
+      const cleaned = line.replace(/^\//, "").replace(/\/+$/, "");
+      if (cleaned) patterns.add(cleaned);
+    }
+  } catch {
+    // No .gitignore or can't read it
+  }
+
+  return patterns;
+}
+
+/**
+ * Check if a relative path should be ignored based on gitignore patterns.
+ * A path is ignored if any of its segments match an ignore pattern.
+ */
+function isIgnored(relPath: string, patterns: Set<string>): boolean {
+  const segments = relPath.split("/");
+  for (const seg of segments) {
+    if (seg.startsWith(".") || patterns.has(seg)) return true;
+  }
+  return false;
+}
+
+/**
  * Find all directories (relative to rootDir) that contain files matching
  * the given pattern. Extracts the directory anchor from the pattern and
- * searches the filesystem for it.
+ * searches the filesystem for it. Respects .gitignore patterns.
  */
 function findMatchingDirectories(
   pattern: string,
@@ -245,11 +281,9 @@ function findMatchingDirectories(
   fs: FsLike,
 ): Set<string> {
   const dirs = new Set<string>();
+  const ignorePatterns = loadIgnorePatterns(rootDir, fs);
 
   // Extract the searchable directory anchor from the pattern.
-  // "**/locales/en-US/**/*.json" → "locales/en-US"
-  // "**/locales/**/*.json" → "locales"
-  // "**/.env*" → "" (no anchor)
   const stripped = pattern.startsWith("**/") ? pattern.slice(3) : pattern;
   const segments = stripped.split("/");
   const anchorSegments: string[] = [];
@@ -275,6 +309,7 @@ function findMatchingDirectories(
     for (const entry of entries) {
       if (!entry.isDirectory()) continue;
       const rel = relative(rootDir, join(entry.parentPath, entry.name));
+      if (isIgnored(rel, ignorePatterns)) continue;
       if (rel.endsWith(anchor) || rel.includes(`/${anchor}`)) {
         const anchorIdx = rel.indexOf(anchor);
         const parent = rel.slice(0, anchorIdx).replace(/\/$/, "");

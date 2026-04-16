@@ -41,6 +41,7 @@ export interface ResolvedRule {
 /** Minimal filesystem interface for filesystem-aware generation */
 export interface FsLike {
   statSync(path: string): { isDirectory(): boolean };
+  readFileSync(path: string, encoding: "utf-8"): string;
   readdirSync(
     path: string,
     options: { withFileTypes: true; recursive: true },

@@ -347,4 +347,56 @@ describe("generate() with rootDir (filesystem-aware)", () => {
     expect(output).not.toContain("//");
     expect(output).toContain("data/locales/**/*.json");
   });
+
+  test("ignores node_modules and dotfile directories", () => {
+    const vol = createVolume({
+      // Real locale files
+      "libs/search/locales/en-US/common.json": "{}",
+      // Junk in node_modules and dotfiles
+      "node_modules/zod/locales/en-US/messages.json": "{}",
+      ".opencode/node_modules/zod/locales/en-US/messages.json": "{}",
+      ".cache/locales/en-US/cached.json": "{}",
+    });
+
+    const config: CodeOwnersConfig = {
+      always: [bot],
+      own: [
+        own(platform, "*"),
+        own(teamA, "libs/search"),
+      ],
+      match: [match("**/locales/**/*.json", { only: [i18n] })],
+    };
+
+    const output = generate(config, { rootDir: "/repo", fs: vol as any });
+
+    expect(output).toContain("libs/search/locales/**/*.json");
+    expect(output).not.toContain("node_modules");
+    expect(output).not.toContain(".opencode");
+    expect(output).not.toContain(".cache");
+    expect(output).not.toContain("zod");
+  });
+
+  test("respects .gitignore patterns for discovery", () => {
+    const vol = createVolume({
+      ".gitignore": "dist\nbuild\n",
+      "libs/search/locales/en-US/common.json": "{}",
+      "dist/locales/en-US/built.json": "{}",
+      "build/locales/en-US/output.json": "{}",
+    });
+
+    const config: CodeOwnersConfig = {
+      always: [bot],
+      own: [
+        own(platform, "*"),
+        own(teamA, "libs/search"),
+      ],
+      match: [match("**/locales/en-US/**/*.json", { add: [i18n] })],
+    };
+
+    const output = generate(config, { rootDir: "/repo", fs: vol as any });
+
+    expect(output).toContain("libs/search/locales/en-US/**/*.json");
+    expect(output).not.toContain("dist/");
+    expect(output).not.toContain("build/");
+  });
 });
