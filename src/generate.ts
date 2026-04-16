@@ -298,7 +298,8 @@ function isIgnored(relPath: string, patterns: Set<string>): boolean {
 /**
  * Find all directories (relative to rootDir) that contain files matching
  * the given pattern. Extracts the directory anchor from the pattern and
- * searches the filesystem for it. Respects .gitignore patterns.
+ * walks the filesystem for it — skipping ignored directories BEFORE
+ * descending into them to avoid scanning node_modules, .git, etc.
  */
 function findMatchingDirectories(
   pattern: string,
@@ -325,16 +326,26 @@ function findMatchingDirectories(
     return dirs;
   }
 
-  // Walk the filesystem looking for directories matching the anchor
-  try {
-    const entries = fs.readdirSync(rootDir, {
-      withFileTypes: true,
-      recursive: true,
-    });
+  // Manual recursive walk — skip ignored dirs BEFORE descending
+  function walk(absDir: string, relDir: string): void {
+    let entries: readonly { name: string; isDirectory(): boolean }[];
+    try {
+      entries = fs.readdirSync(absDir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+
     for (const entry of entries) {
       if (!entry.isDirectory()) continue;
-      const rel = relative(rootDir, join(entry.parentPath, entry.name));
-      if (isIgnored(rel, ignorePatterns)) continue;
+
+      const name = entry.name;
+
+      // Skip before descending — this is the key optimization
+      if (name.startsWith(".") || ignorePatterns.has(name)) continue;
+
+      const rel = relDir ? `${relDir}/${name}` : name;
+
+      // Check if this directory matches the anchor
       if (rel.endsWith(anchor) || rel.includes(`/${anchor}`)) {
         const anchorIdx = rel.indexOf(anchor);
         const parent = rel.slice(0, anchorIdx).replace(/\/$/, "");
@@ -342,11 +353,13 @@ function findMatchingDirectories(
           dirs.add(parent);
         }
       }
+
+      // Recurse
+      walk(join(absDir, name), rel);
     }
-  } catch {
-    // rootDir doesn't exist or can't be read
   }
 
+  walk(rootDir, "");
   return dirs;
 }
 

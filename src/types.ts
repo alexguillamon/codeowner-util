@@ -44,8 +44,8 @@ export interface FsLike {
   readFileSync(path: string, encoding: "utf-8"): string;
   readdirSync(
     path: string,
-    options: { withFileTypes: true; recursive: true },
-  ): readonly { name: string; parentPath: string; isDirectory(): boolean }[];
+    options: { withFileTypes: true },
+  ): readonly { name: string; isDirectory(): boolean }[];
 }
 
 export interface GenerateOptions {
