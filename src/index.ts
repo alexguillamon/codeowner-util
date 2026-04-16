@@ -1,4 +1,4 @@
-export { team, own, match } from "./api.js";
+export { team, own, match, teamDescriptions } from "./api.js";
 export { generate } from "./generate.js";
 export { write } from "./write.js";
 export type {

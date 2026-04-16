@@ -1,5 +1,6 @@
 import * as nodeFs from "node:fs";
 import { join, relative } from "node:path";
+import { teamDescriptions } from "./api.js";
 import type {
   CodeOwnersConfig,
   FsLike,
@@ -73,9 +74,22 @@ export function generate(
   // Direct ownership, grouped by team
   if (directRules.length > 0) {
     lines.push("", "# ── Direct ownership ──────────────────────────────");
-    const grouped = groupByOwners(directRules);
+    const grouped = groupByOwners(directRules, flatEntries);
     for (const group of grouped) {
-      lines.push("", `# ${group.label}`);
+      lines.push("");
+      // Add own() descriptions as comments above the group
+      for (const desc of group.descriptions) {
+        lines.push(`# ${desc}`);
+      }
+      // Build label with team descriptions where available
+      // config.teams takes precedence, falls back to team() descriptions
+      const labelParts = group.label === "(no owners)"
+        ? ["(no owners)"]
+        : group.rules[0].owners.map((owner) => {
+            const desc = config.teams?.[owner] ?? teamDescriptions.get(owner);
+            return desc ? `${owner} (${desc})` : owner;
+          });
+      lines.push(`# ${labelParts.join(", ")}`);
       for (const rule of group.rules) {
         lines.push(formatRule(rule));
       }
@@ -84,9 +98,12 @@ export function generate(
 
   // Match rules, grouped by source pattern
   if (pruned.length > 0) {
-    const matchGroups = groupByPattern(pruned, matchedRules);
+    const matchGroups = groupByPattern(pruned, matchedRules, config.match ?? []);
     for (const group of matchGroups) {
       lines.push("", `# ── Match: ${group.pattern} ──`);
+      if (group.description) {
+        lines.push(`# ${group.description}`);
+      }
       lines.push("");
       for (const rule of group.rules) {
         lines.push(formatRule(rule));
@@ -102,6 +119,8 @@ export function generate(
 interface FlatEntry {
   path: string;
   owners: Team[];
+  /** Descriptions from own() calls that contributed to this entry */
+  descriptions: string[];
 }
 
 /** Normalize a path: strip trailing slashes */
@@ -128,8 +147,15 @@ function flattenOwnership(rules: readonly OwnershipRule[]): FlatEntry[] {
             existing.owners.push(owner);
           }
         }
+        if (rule.description && !existing.descriptions.includes(rule.description)) {
+          existing.descriptions.push(rule.description);
+        }
       } else {
-        const entry = { path, owners: [...rule.owners] };
+        const entry: FlatEntry = {
+          path,
+          owners: [...rule.owners],
+          descriptions: rule.description ? [rule.description] : [],
+        };
         byPath.set(path, entry);
         order.push(path);
       }
@@ -614,25 +640,48 @@ function formatRule(rule: ResolvedRule): string {
 
 interface OwnerGroup {
   label: string;
+  descriptions: string[];
   rules: ResolvedRule[];
 }
 
 /**
  * Group resolved rules by their owner set for visual clustering.
- * Each group gets a label showing the team name(s).
+ * Each group gets a label showing the team name(s) and collects descriptions.
  */
-function groupByOwners(rules: ResolvedRule[]): OwnerGroup[] {
+function groupByOwners(
+  rules: ResolvedRule[],
+  flatEntries: FlatEntry[],
+): OwnerGroup[] {
   const groups: OwnerGroup[] = [];
   const seen = new Map<string, OwnerGroup>();
+
+  // Build lookup from path → descriptions
+  const pathDescriptions = new Map<string, string[]>();
+  for (const entry of flatEntries) {
+    if (entry.descriptions.length > 0) {
+      pathDescriptions.set(entry.path, entry.descriptions);
+    }
+  }
 
   for (const rule of rules) {
     const key = rule.owners.join(" ");
     const existing = seen.get(key);
     if (existing) {
       existing.rules.push(rule);
+      // Collect descriptions from this path
+      const descs = pathDescriptions.get(rule.path);
+      if (descs) {
+        for (const d of descs) {
+          if (!existing.descriptions.includes(d)) {
+            existing.descriptions.push(d);
+          }
+        }
+      }
     } else {
+      const descs = pathDescriptions.get(rule.path) ?? [];
       const group: OwnerGroup = {
         label: rule.owners.length > 0 ? rule.owners.join(", ") : "(no owners)",
+        descriptions: [...descs],
         rules: [rule],
       };
       seen.set(key, group);
@@ -645,6 +694,7 @@ function groupByOwners(rules: ResolvedRule[]): OwnerGroup[] {
 
 interface PatternGroup {
   pattern: string;
+  description?: string;
   rules: ResolvedRule[];
 }
 
@@ -655,11 +705,20 @@ interface PatternGroup {
 function groupByPattern(
   deduped: ResolvedRule[],
   expanded: ExpandedMatch[],
+  matchRules: readonly MatchRule[],
 ): PatternGroup[] {
   // Build a map from resolved path → source pattern
   const pathToPattern = new Map<string, string>();
   for (const m of expanded) {
     pathToPattern.set(m.resolvedPath, m.sourcePattern);
+  }
+
+  // Build a map from source pattern → description
+  const patternToDescription = new Map<string, string>();
+  for (const rule of matchRules) {
+    if (rule.description) {
+      patternToDescription.set(rule.pattern, rule.description);
+    }
   }
 
   const groups: PatternGroup[] = [];
@@ -671,7 +730,11 @@ function groupByPattern(
     if (existing) {
       existing.rules.push(rule);
     } else {
-      const group: PatternGroup = { pattern, rules: [rule] };
+      const group: PatternGroup = {
+        pattern,
+        description: patternToDescription.get(pattern),
+        rules: [rule],
+      };
       seen.set(pattern, group);
       groups.push(group);
     }

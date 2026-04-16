@@ -5,18 +5,24 @@ export type Team = string & { readonly __brand: unique symbol };
 export interface OwnershipRule {
   readonly owners: readonly Team[];
   readonly paths: readonly string[];
+  /** Optional description — rendered as a comment above this ownership block */
+  readonly description?: string;
 }
 
 /** A match rule using `add` — adds owners on top of inherited ownership */
 export interface MatchAdd {
   readonly pattern: string;
   readonly add: readonly Team[];
+  /** Optional description — rendered as a comment above this match section */
+  readonly description?: string;
 }
 
 /** A match rule using `only` — replaces inherited ownership entirely */
 export interface MatchOnly {
   readonly pattern: string;
   readonly only: readonly Team[];
+  /** Optional description — rendered as a comment above this match section */
+  readonly description?: string;
 }
 
 export type MatchRule = MatchAdd | MatchOnly;
@@ -30,6 +36,9 @@ export interface CodeOwnersConfig {
 
   /** Pattern-based rules applied across all owned paths */
   readonly match?: readonly MatchRule[];
+
+  /** Team descriptions for documentation — keyed by team handle */
+  readonly teams?: Readonly<Record<string, string>>;
 }
 
 /** A single resolved line in the generated CODEOWNERS file */
