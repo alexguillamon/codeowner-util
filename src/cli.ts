@@ -1,5 +1,21 @@
 #!/usr/bin/env node
 
+// Suppress Node's MODULE_TYPELESS_PACKAGE_JSON warning when importing .ts
+// config files in projects without "type": "module" in their package.json.
+const _origEmit = process.emit;
+process.emit = function (event: string | symbol, ...args: unknown[]) {
+  if (
+    event === "warning" &&
+    args[0] &&
+    typeof args[0] === "object" &&
+    "code" in args[0] &&
+    args[0].code === "MODULE_TYPELESS_PACKAGE_JSON"
+  ) {
+    return false;
+  }
+  return _origEmit.apply(this, [event, ...args]);
+};
+
 import { resolve, dirname } from "node:path";
 import { write } from "./write.js";
 

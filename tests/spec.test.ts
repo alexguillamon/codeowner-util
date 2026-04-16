@@ -121,6 +121,59 @@ describe("write()", () => {
     expect(result.written).toBe(false);
     expect(result.upToDate).toBe(false);
   });
+
+  test("check mode does NOT modify the existing file", () => {
+    const outputPath = join(tmpDir, "CODEOWNERS");
+    const staleContent = "stale content that should not change";
+    writeFileSync(outputPath, staleContent);
+
+    write(config, { outputPath, check: true });
+
+    // File must be untouched
+    const afterCheck = readFileSync(outputPath, "utf-8");
+    expect(afterCheck).toBe(staleContent);
+  });
+
+  test("check mode does NOT create a missing file", () => {
+    const outputPath = join(tmpDir, "should-not-exist", "CODEOWNERS");
+
+    write(config, { outputPath, check: true });
+
+    // Parent dir should not have been created
+    expect(() => readFileSync(outputPath, "utf-8")).toThrow();
+  });
+
+  test("check detects stale file after config change", () => {
+    const outputPath = join(tmpDir, "CODEOWNERS");
+
+    // Write with original config
+    write(config, { outputPath });
+    expect(write(config, { outputPath, check: true }).upToDate).toBe(true);
+
+    // Change the config — different team
+    const newConfig: CodeOwnersConfig = {
+      own: [own(team("@org/different-team"), "*")],
+    };
+    const result = write(newConfig, { outputPath, check: true });
+    expect(result.upToDate).toBe(false);
+
+    // File still has old content
+    const onDisk = readFileSync(outputPath, "utf-8");
+    expect(onDisk).toContain("@org/platform");
+    expect(onDisk).not.toContain("@org/different-team");
+  });
+
+  test("check returns generated content even when stale", () => {
+    const outputPath = join(tmpDir, "CODEOWNERS");
+    writeFileSync(outputPath, "old");
+
+    const result = write(config, { outputPath, check: true });
+
+    expect(result.upToDate).toBe(false);
+    // content should be the freshly generated output, not the stale file
+    expect(result.content).toContain("@org/platform");
+    expect(result.content).not.toBe("old");
+  });
 });
 
 // ── CLI ─────────────────────────────────────────────────
@@ -212,6 +265,64 @@ describe("CLI", () => {
     );
     await proc.exited;
     expect(proc.exitCode).toBe(1);
+  });
+
+  test("--check exits 1 when file does not exist", async () => {
+    const outputPath = join(tmpDir, "missing", "CODEOWNERS");
+
+    const proc = Bun.spawn(
+      [
+        "bun", "run", cliPath,
+        "--config", configPath,
+        "--output", outputPath,
+        "--check",
+      ],
+      { stdout: "pipe", stderr: "pipe" },
+    );
+    await proc.exited;
+    expect(proc.exitCode).toBe(1);
+  });
+
+  test("--check does not modify existing stale file", async () => {
+    const outputPath = join(tmpDir, "CODEOWNERS");
+    const stale = "this should not change";
+    writeFileSync(outputPath, stale);
+
+    const proc = Bun.spawn(
+      [
+        "bun", "run", cliPath,
+        "--config", configPath,
+        "--output", outputPath,
+        "--check",
+      ],
+      { stdout: "pipe", stderr: "pipe" },
+    );
+    await proc.exited;
+    expect(proc.exitCode).toBe(1);
+
+    // File must be untouched
+    const afterCheck = readFileSync(outputPath, "utf-8");
+    expect(afterCheck).toBe(stale);
+  });
+
+  test("--check prints useful message on stderr when stale", async () => {
+    const outputPath = join(tmpDir, "CODEOWNERS");
+    writeFileSync(outputPath, "stale");
+
+    const proc = Bun.spawn(
+      [
+        "bun", "run", cliPath,
+        "--config", configPath,
+        "--output", outputPath,
+        "--check",
+      ],
+      { stdout: "pipe", stderr: "pipe" },
+    );
+    const stderr = await new Response(proc.stderr).text();
+    await proc.exited;
+
+    expect(proc.exitCode).toBe(1);
+    expect(stderr).toContain("out of date");
   });
 
   test("exits 2 when config file does not exist", async () => {
