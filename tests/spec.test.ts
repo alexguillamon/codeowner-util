@@ -516,4 +516,33 @@ describe("generate() with rootDir (filesystem-aware)", () => {
     expect(output).not.toContain("dist/");
     expect(output).not.toContain("build/");
   });
+
+  test("respects nested .gitignore files in subdirectories", () => {
+    const vol = createVolume({
+      ".gitignore": "node_modules\n",
+      // nested .gitignore ignores build output
+      "libs/search/.gitignore": "dist\npublic\n",
+      "libs/search/locales/en-US/common.json": "{}",
+      // build output that should be ignored
+      "libs/search/dist/locales/en-US/built.json": "{}",
+      "libs/search/public/locales/en-US/output.json": "{}",
+    });
+
+    const config: CodeOwnersConfig = {
+      always: [bot],
+      own: [
+        own(platform, "*"),
+        own(teamA, "libs/search"),
+      ],
+      match: [match("**/locales/en-US/**/*.json", { add: [i18n] })],
+    };
+
+    const output = generate(config, { rootDir: "/repo", fs: vol as any });
+
+    // Real locale files should produce a rule
+    expect(output).toContain("libs/search/locales/en-US/**/*.json");
+    // Build output in gitignored dirs should NOT produce rules
+    expect(output).not.toContain("libs/search/dist");
+    expect(output).not.toContain("libs/search/public");
+  });
 });

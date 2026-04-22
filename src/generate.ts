@@ -299,21 +299,31 @@ function hasMatchingPath(
 }
 
 /**
+ * Parse a .gitignore file and return the set of directory name patterns.
+ * Strips leading/trailing slashes, skips comments and negations.
+ */
+function parseGitignore(content: string): string[] {
+  const patterns: string[] = [];
+  for (const raw of content.split("\n")) {
+    const line = raw.trim();
+    if (!line || line.startsWith("#") || line.startsWith("!")) continue;
+    const cleaned = line.replace(/^\//, "").replace(/\/+$/, "");
+    if (cleaned) patterns.push(cleaned);
+  }
+  return patterns;
+}
+
+/**
  * Load ignore patterns from .gitignore + built-in defaults.
  * Returns a set of directory names/patterns to skip during traversal.
  */
 function loadIgnorePatterns(rootDir: string, fs: FsLike): Set<string> {
-  // Always ignore these
   const patterns = new Set(["node_modules", ".git"]);
 
   try {
     const content = fs.readFileSync(join(rootDir, ".gitignore"), "utf-8");
-    for (const raw of content.split("\n")) {
-      const line = raw.trim();
-      if (!line || line.startsWith("#") || line.startsWith("!")) continue;
-      // Strip trailing slash and leading slash
-      const cleaned = line.replace(/^\//, "").replace(/\/+$/, "");
-      if (cleaned) patterns.add(cleaned);
+    for (const p of parseGitignore(content)) {
+      patterns.add(p);
     }
   } catch {
     // No .gitignore or can't read it
@@ -323,22 +333,33 @@ function loadIgnorePatterns(rootDir: string, fs: FsLike): Set<string> {
 }
 
 /**
- * Check if a relative path should be ignored based on gitignore patterns.
- * A path is ignored if any of its segments match an ignore pattern.
+ * Load additional ignore patterns from a .gitignore file in the given directory.
+ * Returns the new patterns (not including inherited ones).
  */
-function isIgnored(relPath: string, patterns: Set<string>): boolean {
-  const segments = relPath.split("/");
-  for (const seg of segments) {
-    if (seg.startsWith(".") || patterns.has(seg)) return true;
+function loadLocalIgnorePatterns(absDir: string, fs: FsLike): string[] {
+  try {
+    const content = fs.readFileSync(join(absDir, ".gitignore"), "utf-8");
+    return parseGitignore(content);
+  } catch {
+    return [];
   }
-  return false;
+}
+
+/**
+ * Check if a directory name should be ignored based on the current ignore set.
+ */
+function shouldIgnore(name: string, ignorePatterns: Set<string>): boolean {
+  return name.startsWith(".") || ignorePatterns.has(name);
 }
 
 /**
  * Find all directories (relative to rootDir) that contain files matching
  * the given pattern. Extracts the directory anchor from the pattern and
- * walks the filesystem for it — skipping ignored directories BEFORE
+ * walks the filesystem for it, skipping ignored directories BEFORE
  * descending into them to avoid scanning node_modules, .git, etc.
+ *
+ * Respects nested .gitignore files: each directory's .gitignore is loaded
+ * and merged into the ignore set for its subtree.
  */
 function findMatchingDirectories(
   pattern: string,
@@ -346,7 +367,7 @@ function findMatchingDirectories(
   fs: FsLike,
 ): Set<string> {
   const dirs = new Set<string>();
-  const ignorePatterns = loadIgnorePatterns(rootDir, fs);
+  const rootIgnorePatterns = loadIgnorePatterns(rootDir, fs);
 
   // Extract the searchable directory anchor from the pattern.
   const stripped = pattern.startsWith("**/") ? pattern.slice(3) : pattern;
@@ -359,14 +380,15 @@ function findMatchingDirectories(
   const anchor = anchorSegments.join("/");
 
   if (!anchor) {
-    // No directory anchor (e.g. "**/.env*"). Discovery isn't meaningful —
-    // owned directories are already checked individually via hasMatchingPath,
-    // and catch-all * handles the global pattern.
     return dirs;
   }
 
-  // Manual recursive walk — skip ignored dirs BEFORE descending
-  function walk(absDir: string, relDir: string): void {
+  // Manual recursive walk with per-directory .gitignore support
+  function walk(
+    absDir: string,
+    relDir: string,
+    ignorePatterns: Set<string>,
+  ): void {
     let entries: readonly { name: string; isDirectory(): boolean }[];
     try {
       entries = fs.readdirSync(absDir, { withFileTypes: true });
@@ -374,13 +396,20 @@ function findMatchingDirectories(
       return;
     }
 
+    // Load local .gitignore and merge into a new set for this subtree
+    const localPatterns = loadLocalIgnorePatterns(absDir, fs);
+    const effectiveIgnore =
+      localPatterns.length > 0
+        ? new Set([...ignorePatterns, ...localPatterns])
+        : ignorePatterns;
+
     for (const entry of entries) {
       if (!entry.isDirectory()) continue;
 
       const name = entry.name;
 
-      // Skip before descending — this is the key optimization
-      if (name.startsWith(".") || ignorePatterns.has(name)) continue;
+      // Skip before descending
+      if (shouldIgnore(name, effectiveIgnore)) continue;
 
       const rel = relDir ? `${relDir}/${name}` : name;
 
@@ -393,12 +422,12 @@ function findMatchingDirectories(
         }
       }
 
-      // Recurse
-      walk(join(absDir, name), rel);
+      // Recurse with the effective ignore set
+      walk(join(absDir, name), rel, effectiveIgnore);
     }
   }
 
-  walk(rootDir, "");
+  walk(rootDir, "", rootIgnorePatterns);
   return dirs;
 }
 
