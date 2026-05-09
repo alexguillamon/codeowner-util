@@ -298,33 +298,49 @@ function hasMatchingPath(
   return isDirectory(join(rootDir, dirPath), fs);
 }
 
+interface IgnorePattern {
+  baseRelDir: string;
+  anchored: boolean;
+  hasSlash: boolean;
+  regex: RegExp;
+}
+
 /**
- * Parse a .gitignore file and return the set of directory name patterns.
- * Strips leading/trailing slashes, skips comments and negations.
+ * Parse a .gitignore file into patterns scoped to the directory containing it.
+ * Negations are skipped because ignored directories are never descended into.
  */
-function parseGitignore(content: string): string[] {
-  const patterns: string[] = [];
+function parseGitignore(content: string, baseRelDir: string): IgnorePattern[] {
+  const patterns: IgnorePattern[] = [];
   for (const raw of content.split("\n")) {
     const line = raw.trim();
     if (!line || line.startsWith("#") || line.startsWith("!")) continue;
-    const cleaned = line.replace(/^\//, "").replace(/\/+$/, "");
-    if (cleaned) patterns.push(cleaned);
+
+    const anchored = line.startsWith("/");
+    const cleaned = line.replace(/^\/+/, "").replace(/\/+$/, "");
+    if (!cleaned) continue;
+
+    patterns.push({
+      baseRelDir,
+      anchored,
+      hasSlash: cleaned.includes("/"),
+      regex: globToRegExp(cleaned),
+    });
   }
   return patterns;
 }
 
 /**
  * Load ignore patterns from .gitignore + built-in defaults.
- * Returns a set of directory names/patterns to skip during traversal.
  */
-function loadIgnorePatterns(rootDir: string, fs: FsLike): Set<string> {
-  const patterns = new Set(["node_modules", ".git"]);
+function loadIgnorePatterns(rootDir: string, fs: FsLike): IgnorePattern[] {
+  const patterns: IgnorePattern[] = [
+    createIgnorePattern("node_modules", ""),
+    createIgnorePattern(".git", ""),
+  ];
 
   try {
     const content = fs.readFileSync(join(rootDir, ".gitignore"), "utf-8");
-    for (const p of parseGitignore(content)) {
-      patterns.add(p);
-    }
+    patterns.push(...parseGitignore(content, ""));
   } catch {
     // No .gitignore or can't read it
   }
@@ -332,24 +348,103 @@ function loadIgnorePatterns(rootDir: string, fs: FsLike): Set<string> {
   return patterns;
 }
 
+function createIgnorePattern(pattern: string, baseRelDir: string): IgnorePattern {
+  return {
+    baseRelDir,
+    anchored: false,
+    hasSlash: pattern.includes("/"),
+    regex: globToRegExp(pattern),
+  };
+}
+
 /**
  * Load additional ignore patterns from a .gitignore file in the given directory.
  * Returns the new patterns (not including inherited ones).
  */
-function loadLocalIgnorePatterns(absDir: string, fs: FsLike): string[] {
+function loadLocalIgnorePatterns(
+  absDir: string,
+  relDir: string,
+  fs: FsLike,
+): IgnorePattern[] {
   try {
     const content = fs.readFileSync(join(absDir, ".gitignore"), "utf-8");
-    return parseGitignore(content);
+    return parseGitignore(content, relDir);
   } catch {
     return [];
   }
 }
 
 /**
- * Check if a directory name should be ignored based on the current ignore set.
+ * Check if a directory should be ignored based on the current ignore patterns.
  */
-function shouldIgnore(name: string, ignorePatterns: Set<string>): boolean {
-  return name.startsWith(".") || ignorePatterns.has(name);
+function shouldIgnore(
+  name: string,
+  relPath: string,
+  ignorePatterns: readonly IgnorePattern[],
+): boolean {
+  return name.startsWith(".") || ignorePatterns.some((p) => matchesIgnore(p, relPath));
+}
+
+function matchesIgnore(pattern: IgnorePattern, relPath: string): boolean {
+  let scopedPath = relPath;
+
+  if (pattern.baseRelDir) {
+    if (relPath === pattern.baseRelDir) return false;
+    if (!relPath.startsWith(`${pattern.baseRelDir}/`)) return false;
+    scopedPath = relPath.slice(pattern.baseRelDir.length + 1);
+  }
+
+  if (!scopedPath) return false;
+
+  if (!pattern.hasSlash && !pattern.anchored) {
+    const basename = scopedPath.split("/").pop() ?? scopedPath;
+    return pattern.regex.test(basename);
+  }
+
+  return pattern.regex.test(scopedPath);
+}
+
+function globToRegExp(pattern: string): RegExp {
+  let source = "^";
+
+  for (let i = 0; i < pattern.length;) {
+    const char = pattern[i];
+    const next = pattern[i + 1];
+    const afterNext = pattern[i + 2];
+
+    if (char === "*" && next === "*" && afterNext === "/") {
+      source += "(?:.*\\/)?";
+      i += 3;
+      continue;
+    }
+
+    if (char === "*" && next === "*") {
+      source += ".*";
+      i += 2;
+      continue;
+    }
+
+    if (char === "*") {
+      source += "[^/]*";
+      i += 1;
+      continue;
+    }
+
+    if (char === "?") {
+      source += "[^/]";
+      i += 1;
+      continue;
+    }
+
+    source += escapeRegExp(char);
+    i += 1;
+  }
+
+  return new RegExp(`${source}$`);
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[|\\{}()[\]^$+?.]/g, "\\$&");
 }
 
 /**
@@ -387,7 +482,7 @@ function findMatchingDirectories(
   function walk(
     absDir: string,
     relDir: string,
-    ignorePatterns: Set<string>,
+    ignorePatterns: readonly IgnorePattern[],
   ): void {
     let entries: readonly { name: string; isDirectory(): boolean }[];
     try {
@@ -397,10 +492,10 @@ function findMatchingDirectories(
     }
 
     // Load local .gitignore and merge into a new set for this subtree
-    const localPatterns = loadLocalIgnorePatterns(absDir, fs);
+    const localPatterns = loadLocalIgnorePatterns(absDir, relDir, fs);
     const effectiveIgnore =
       localPatterns.length > 0
-        ? new Set([...ignorePatterns, ...localPatterns])
+        ? [...ignorePatterns, ...localPatterns]
         : ignorePatterns;
 
     for (const entry of entries) {
@@ -408,10 +503,10 @@ function findMatchingDirectories(
 
       const name = entry.name;
 
-      // Skip before descending
-      if (shouldIgnore(name, effectiveIgnore)) continue;
-
       const rel = relDir ? `${relDir}/${name}` : name;
+
+      // Skip before descending
+      if (shouldIgnore(name, rel, effectiveIgnore)) continue;
 
       // Check if this directory matches the anchor
       if (rel.endsWith(anchor) || rel.includes(`/${anchor}`)) {

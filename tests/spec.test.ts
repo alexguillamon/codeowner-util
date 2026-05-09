@@ -517,6 +517,54 @@ describe("generate() with rootDir (filesystem-aware)", () => {
     expect(output).not.toContain("build/");
   });
 
+  test("respects path-scoped .gitignore patterns for discovery", () => {
+    const vol = createVolume({
+      ".gitignore": "apps/**/public/ignored-assets/\n",
+      "apps/admin-panel/locales/en-US/common.json": "{}",
+      "apps/admin-panel/public/ignored-assets/locales/en-US/generated.json": "{}",
+    });
+
+    const config: CodeOwnersConfig = {
+      always: [bot],
+      own: [
+        own(platform, "*"),
+        own(teamB, "apps/admin-panel"),
+      ],
+      match: [match("**/locales/en-US/**/*.json", { add: [i18n] })],
+    };
+
+    const output = generate(config, { rootDir: "/repo", fs: vol as any });
+
+    expect(output).toContain(
+      "apps/admin-panel/locales/en-US/**/*.json @org/team-b @org/i18n @ci-bot",
+    );
+    expect(output).not.toContain("ignored-assets");
+  });
+
+  test("respects nested path-scoped .gitignore patterns", () => {
+    const vol = createVolume({
+      "apps/admin-panel/.gitignore": "public/ignored-assets/\n",
+      "apps/admin-panel/public/locales/en-US/common.json": "{}",
+      "apps/admin-panel/public/ignored-assets/locales/en-US/generated.json": "{}",
+    });
+
+    const config: CodeOwnersConfig = {
+      always: [bot],
+      own: [
+        own(platform, "*"),
+        own(teamB, "apps/admin-panel"),
+      ],
+      match: [match("**/locales/en-US/**/*.json", { add: [i18n] })],
+    };
+
+    const output = generate(config, { rootDir: "/repo", fs: vol as any });
+
+    expect(output).toContain(
+      "apps/admin-panel/public/locales/en-US/**/*.json @org/team-b @org/i18n @ci-bot",
+    );
+    expect(output).not.toContain("ignored-assets");
+  });
+
   test("respects nested .gitignore files in subdirectories", () => {
     const vol = createVolume({
       ".gitignore": "node_modules\n",
