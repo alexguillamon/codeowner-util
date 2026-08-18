@@ -5,7 +5,7 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/alexguillamon/codeowner-util.git"
+    "url": "git+https://github.com/alexguillamon/codeowner-util.git"
   },
   "type": "module",
   "main": "dist/index.js",
@@ -22,6 +22,9 @@
   "files": [
     "dist"
   ],
+  "publishConfig": {
+    "registry": "https://registry.npmjs.org/"
+  },
   "keywords": [
     "codeowners",
     "github",
