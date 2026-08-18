@@ -1,5 +1,5 @@
 import type { Team, OwnershipRule, AddRule, OnlyRule } from "./types.js";
-import { assertText, assertToken, assertTeams } from "./validate.js";
+import { assertPatterns, assertText, assertToken, assertTeams } from "./validate.js";
 
 /**
  * Registry of team descriptions, keyed by team handle.
@@ -71,7 +71,7 @@ function ruleParts(
   const ownerList = Array.isArray(owners) ? owners : [owners as Team];
   const patternList = Array.isArray(patterns) ? patterns : [patterns as string];
   assertTeams(ownerList);
-  for (const pattern of patternList) assertToken("rule pattern", pattern);
+  assertPatterns(patternList);
   assertText("rule description", description);
   return {
     owners: ownerList,

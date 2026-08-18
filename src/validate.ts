@@ -52,6 +52,20 @@ export function assertText(kind: string, value: string | undefined): void {
   }
 }
 
+/**
+ * Check the patterns of a rule. A pattern starting with `!` excludes files,
+ * so a rule made only of exclusions would select nothing.
+ */
+export function assertPatterns(patterns: readonly string[]): void {
+  for (const pattern of patterns) assertToken("rule pattern", pattern);
+  if (!patterns.some((p) => !p.startsWith("!"))) {
+    throw new Error(
+      "codeowners-util: a rule needs at least one pattern that is not an " +
+        `exclusion. Got ${JSON.stringify(patterns)}.`,
+    );
+  }
+}
+
 export function assertTeams(owners: readonly Team[]): void {
   for (const owner of owners) assertToken("team handle", owner);
 }
@@ -70,7 +84,7 @@ export function assertConfig(config: CodeOwnersConfig): void {
   }
 
   for (const rule of config.rules ?? []) {
-    for (const pattern of rule.patterns) assertToken("rule pattern", pattern);
+    assertPatterns(rule.patterns);
     assertTeams(rule.owners);
     assertText("rule description", rule.description);
   }

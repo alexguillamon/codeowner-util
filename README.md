@@ -22,7 +22,9 @@ There are two layers to ownership:
 
 4. `always` is unconditional. Teams listed here are appended to every rule. Useful for bot accounts.
 
-5. Declaration order decides. Entries in `rules` run in the order you write them, and each one builds on the result of the last. Pattern specificity does not reorder them. `own()` is the base layer, so its order does not matter — the narrowest declaration wins.
+5. A pattern starting with `!` excludes files from that rule, as it does in `.gitignore`.
+
+6. Declaration order decides. Entries in `rules` run in the order you write them, and each one builds on the result of the last. Pattern specificity does not reorder them. `own()` is the base layer, so its order does not matter — the narrowest declaration wins.
 
 ## Install
 
@@ -153,6 +155,30 @@ src/**/*.test.ts        matches the root src directory only
 
 A pattern with no glob characters acts as a directory prefix. `apps/web` matches `apps/web` and everything below it.
 
+### Excluding files with `!`
+
+A pattern starting with `!` removes files from the rule it belongs to. A file must match at least one ordinary pattern, and no `!` pattern.
+
+This lets you write a broad default with a narrow carve-out:
+
+```typescript
+own(commerceDev, "*"),
+own(airCars, "libs/air"),
+
+rules: [
+  // Locale files belong to the shared team, except English source strings
+  only(commerceDev, ["**/locales/**/*.json", "!**/locales/en-US/**"]),
+  // which stay with the owning team, plus localization
+  add(localization, "**/locales/en-US/**/*.json"),
+];
+```
+
+`libs/air/locales/fr/air.json` goes to `@org/commerce-dev`. `libs/air/locales/en-US/air.json` keeps `@org/air-cars` and gains `@org/localization`.
+
+Without `!` you cannot express this. `only()` would take the English files too, and no later rule can give a file back an owner that varies per directory.
+
+A rule needs at least one pattern that is not an exclusion, otherwise it selects nothing. That throws.
+
 The generator reads the real files in your repository, works out the exact owner set for every file, then writes the smallest set of rules that reproduces those owners. It checks the result before writing. If a directory holds no matching file, no rule is emitted for it.
 
 ### Ordering
@@ -280,7 +306,7 @@ Declares ownership. Accepts a single team or array, and a single path or array.
 
 ### `only(owners, patterns, description?)`
 
-Replaces the owners of every file the patterns match. Accepts a single team or an array, and a single pattern or an array.
+Replaces the owners of every file the patterns match. Accepts a single team or an array, and a single pattern or an array. A pattern starting with `!` excludes files from the rule.
 
 ### `add(owners, patterns, description?)`
 

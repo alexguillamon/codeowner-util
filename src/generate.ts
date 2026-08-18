@@ -10,9 +10,12 @@ import type {
 } from "./types.js";
 import {
   evaluateRules,
+  excludePatterns,
   flattenOwnership,
+  includePatterns,
   matchesCodeownersPattern,
   resolveOwnerStages,
+  ruleMatches,
   specificity,
   unique,
   walkFiles,
@@ -162,8 +165,10 @@ function compressRules(
 
     // A rule may carry several patterns. Each one is compressed on its own,
     // because a scope only means something relative to one pattern.
-    for (const pattern of rule.patterns) {
-      const matched = files.filter((f) => matchesCodeownersPattern(pattern, f));
+    for (const pattern of includePatterns(rule)) {
+      const matched = files.filter(
+        (f) => matchesCodeownersPattern(pattern, f) && ruleMatches(rule, f),
+      );
       if (matched.length === 0) continue;
 
       // A broad line first, so later scoped lines can override it.
@@ -209,6 +214,13 @@ function compressRules(
       }
     }
 
+    // An emitted pattern is broader than the rule itself, so it can still
+    // cover a file the rule excluded. Put those files back, with the owners
+    // they kept, using a narrower line that is written afterwards.
+    for (const line of restoreExcluded(rule, files, lines, ownersOf)) {
+      lines.push(line);
+    }
+
     if (lines.length === 0) continue;
     lines.sort((a, b) => specificity(a.path) - specificity(b.path));
     groups.push({
@@ -219,6 +231,52 @@ function compressRules(
   }
 
   return dropRedundantLines(groups, directRules, ownersByFile, files);
+}
+
+/**
+ * Build the lines that give an excluded file its owners back.
+ *
+ * A rule with a `!` pattern still emits broad lines, because they are shorter
+ * and they keep covering files added later. Those lines can reach a file the
+ * rule excluded, so each such file needs a narrower line after them.
+ */
+function restoreExcluded(
+  rule: PolicyRule,
+  files: readonly string[],
+  lines: readonly ResolvedRule[],
+  ownersOf: (file: string) => Team[],
+): ResolvedRule[] {
+  const excludes = excludePatterns(rule);
+  if (excludes.length === 0 || lines.length === 0) return [];
+
+  const covered = (file: string) =>
+    lines.some((line) => matchesCodeownersPattern(line.path, file));
+
+  const byScope = new Map<string, { pattern: string; files: string[] }>();
+  for (const file of files) {
+    if (ruleMatches(rule, file) || !covered(file)) continue;
+    const pattern = excludes.find((p) => matchesCodeownersPattern(p, file));
+    if (!pattern) continue;
+    const key = `${pattern}\u0000${scopeFor(pattern, file)}`;
+    const bucket = byScope.get(key);
+    if (bucket) bucket.files.push(file);
+    else byScope.set(key, { pattern, files: [file] });
+  }
+
+  const restored: ResolvedRule[] = [];
+  for (const [key, { pattern, files: scopeFiles }] of byScope) {
+    const scope = key.slice(key.indexOf("\u0000") + 1);
+    const keys = new Set(scopeFiles.map((f) => ownerKey(ownersOf(f))));
+    if (keys.size === 1) {
+      restored.push({
+        path: scopedPath(pattern, scope),
+        owners: ownersOf(scopeFiles[0]),
+      });
+    } else {
+      for (const f of scopeFiles) restored.push({ path: f, owners: ownersOf(f) });
+    }
+  }
+  return restored;
 }
 
 /**

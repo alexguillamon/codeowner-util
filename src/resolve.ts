@@ -203,9 +203,30 @@ export function matchesCodeownersPattern(pattern: string, file: string): boolean
   return cachedRegExp(pattern).test(file);
 }
 
-/** Does any of a rule's patterns match this file? */
+/** The patterns of a rule that select files. */
+export function includePatterns(rule: PolicyRule): string[] {
+  return rule.patterns.filter((p) => !p.startsWith("!"));
+}
+
+/** The patterns of a rule that remove files again, with the `!` stripped. */
+export function excludePatterns(rule: PolicyRule): string[] {
+  return rule.patterns
+    .filter((p) => p.startsWith("!"))
+    .map((p) => p.slice(1));
+}
+
+/**
+ * Does a rule apply to this file?
+ *
+ * A file must match at least one pattern, and no `!` pattern. This is the
+ * same reading `.gitignore` gives to `!`, so a broad rule can carve out a
+ * subtree without listing everything it does cover.
+ */
 export function ruleMatches(rule: PolicyRule, file: string): boolean {
-  return rule.patterns.some((p) => matchesCodeownersPattern(p, file));
+  if (excludePatterns(rule).some((p) => matchesCodeownersPattern(p, file))) {
+    return false;
+  }
+  return includePatterns(rule).some((p) => matchesCodeownersPattern(p, file));
 }
 
 // ── Phase 2: resolve owners per file ───────────────────
