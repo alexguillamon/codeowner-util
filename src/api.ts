@@ -1,4 +1,4 @@
-import type { Team, OwnershipRule, MatchAdd, MatchOnly } from "./types.js";
+import type { Team, OwnershipRule, AddRule, OnlyRule } from "./types.js";
 import { assertText, assertToken, assertTeams } from "./validate.js";
 
 /**
@@ -35,45 +35,47 @@ export function own(
   };
 }
 
-/** Create an `add` match rule — adds owners on top of inherited ownership */
-export function match(
-  pattern: string,
-  opts: { add: readonly Team[]; description?: string },
-): MatchAdd;
+/**
+ * Replace the owners of every file these patterns match.
+ *
+ * `only` discards whatever owners a file had, including a direct `own()`
+ * declaration. Use `add` when you want to keep them.
+ */
+export function only(
+  owners: Team | readonly Team[],
+  patterns: string | readonly string[],
+  description?: string,
+): OnlyRule {
+  return { kind: "only", ...ruleParts(owners, patterns, description) };
+}
 
-/** Create an `only` match rule — replaces inherited ownership entirely */
-export function match(
-  pattern: string,
-  opts: { only: readonly Team[]; description?: string },
-): MatchOnly;
+/**
+ * Add owners on top of the owners a file already has.
+ *
+ * The owners a file already has come from `own()` and from any earlier rule,
+ * so `add` composes with the rules declared before it.
+ */
+export function add(
+  owners: Team | readonly Team[],
+  patterns: string | readonly string[],
+  description?: string,
+): AddRule {
+  return { kind: "add", ...ruleParts(owners, patterns, description) };
+}
 
-export function match(
-  pattern: string,
-  opts: {
-    add?: readonly Team[];
-    only?: readonly Team[];
-    description?: string;
-  },
-): MatchAdd | MatchOnly {
-  assertToken("match() pattern", pattern);
-  assertText("match() description", opts.description);
-  if ("only" in opts && opts.only) {
-    assertTeams(opts.only);
-    return {
-      pattern,
-      only: opts.only,
-      ...(opts.description ? { description: opts.description } : {}),
-    };
-  }
-  if ("add" in opts && opts.add) {
-    assertTeams(opts.add);
-    return {
-      pattern,
-      add: opts.add,
-      ...(opts.description ? { description: opts.description } : {}),
-    };
-  }
-  throw new Error(
-    `match("${pattern}"): must specify either { add: [...] } or { only: [...] }`,
-  );
+function ruleParts(
+  owners: Team | readonly Team[],
+  patterns: string | readonly string[],
+  description?: string,
+) {
+  const ownerList = Array.isArray(owners) ? owners : [owners as Team];
+  const patternList = Array.isArray(patterns) ? patterns : [patterns as string];
+  assertTeams(ownerList);
+  for (const pattern of patternList) assertToken("rule pattern", pattern);
+  assertText("rule description", description);
+  return {
+    owners: ownerList,
+    patterns: patternList,
+    ...(description ? { description } : {}),
+  };
 }

@@ -15,7 +15,7 @@ const WHITESPACE = /\s/;
 
 /**
  * Check a value that must appear as a single field on a CODEOWNERS line:
- * a team handle, an `own()` path, or a `match()` pattern.
+ * a team handle, an `own()` path, or a rule pattern.
  */
 export function assertToken(kind: string, value: string): void {
   if (typeof value !== "string" || value.length === 0) {
@@ -69,10 +69,10 @@ export function assertConfig(config: CodeOwnersConfig): void {
     assertText("own() description", rule.description);
   }
 
-  for (const rule of config.match ?? []) {
-    assertToken("match() pattern", rule.pattern);
-    assertTeams("only" in rule ? rule.only : rule.add);
-    assertText("match() description", rule.description);
+  for (const rule of config.rules ?? []) {
+    for (const pattern of rule.patterns) assertToken("rule pattern", pattern);
+    assertTeams(rule.owners);
+    assertText("rule description", rule.description);
   }
 
   for (const [handle, description] of Object.entries(config.teams ?? {})) {

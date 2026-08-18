@@ -9,6 +9,7 @@ import {
 } from "./glob.js";
 import type {
   CodeOwnersConfig,
+  PolicyRule,
   FsLike,
   OwnershipRule,
   ResolvedRule,
@@ -183,7 +184,7 @@ function cachedRegExp(pattern: string): RegExp {
 /**
  * Does a pattern match a repo-relative file path?
  *
- * One matcher serves both `match()` patterns from the config and emitted
+ * One matcher serves both rule patterns from the config and emitted
  * CODEOWNERS lines, so resolution and verification cannot drift apart.
  *
  * Patterns are anchored at the repository root:
@@ -202,13 +203,18 @@ export function matchesCodeownersPattern(pattern: string, file: string): boolean
   return cachedRegExp(pattern).test(file);
 }
 
+/** Does any of a rule's patterns match this file? */
+export function ruleMatches(rule: PolicyRule, file: string): boolean {
+  return rule.patterns.some((p) => matchesCodeownersPattern(p, file));
+}
+
 // ── Phase 2: resolve owners per file ───────────────────
 
 /**
  * Compute the exact owner set for every file.
  *
  * Ownership is seeded from `own()` (longest matching prefix, falling back to
- * the catch-all), then each `match()` rule is applied **in declaration
+ * the catch-all), then each `only()`/`add()` rule is applied **in declaration
  * order**: `only` replaces the current owners, `add` unions onto them.
  *
  * Because rules are applied sequentially to a per-file owner set, overlapping
@@ -226,7 +232,7 @@ export function resolveOwnersByFile(
  * The owner map after each step of resolution.
  *
  * Index 0 holds the owners that `own()` alone gives. Index `k + 1` holds the
- * owners after match rule `k` runs. The generator needs these snapshots to
+ * owners after rule `k` runs. The generator needs these snapshots to
  * attribute a line to the rule that caused it. Without them, a change made by
  * a late rule looks like it came from the first rule that touched the file.
  */
@@ -253,15 +259,16 @@ export function resolveOwnerStages(
 
   const stages: Map<string, Team[]>[] = [withAlways(current)];
 
-  for (const rule of config.match ?? []) {
-    const isOnly = "only" in rule;
+  for (const rule of config.rules ?? []) {
     const next = new Map(current);
     for (const file of files) {
-      if (!matchesCodeownersPattern(rule.pattern, file)) continue;
+      if (!ruleMatches(rule, file)) continue;
       const owners = next.get(file) ?? [];
       next.set(
         file,
-        isOnly ? unique([...rule.only]) : unique([...owners, ...rule.add]),
+        rule.kind === "only"
+          ? unique([...rule.owners])
+          : unique([...owners, ...rule.owners]),
       );
     }
     current = next;

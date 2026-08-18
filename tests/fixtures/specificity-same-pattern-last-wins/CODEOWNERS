@@ -5,6 +5,6 @@
 # @org/team-a
 libs/search @org/team-a
 
-# ── Match: **/config/**/*.json ──
+# ── add: **/config/**/*.json ──
 
 libs/search/config/**/*.json @org/i18n @org/security

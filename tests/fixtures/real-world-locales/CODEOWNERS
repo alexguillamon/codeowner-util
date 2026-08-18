@@ -16,6 +16,6 @@ libs/payments @org/team-b @ci-bot
 # @org/team-c, @ci-bot
 libs/notifications @org/team-c @ci-bot
 
-# ── Match: **/locales/**/*.json ──
+# ── only: **/locales/**/*.json ──
 
 **/locales/**/*.json @org/i18n @ci-bot

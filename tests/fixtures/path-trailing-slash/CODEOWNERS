@@ -5,6 +5,6 @@
 # @org/team-a
 stores @org/team-a
 
-# ── Match: **/locales/**/*.json ──
+# ── only: **/locales/**/*.json ──
 
 **/locales/**/*.json @org/i18n

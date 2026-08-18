@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { Volume } from "memfs";
-import { match, own, team } from "../src/index.js";
+import { own, team, add, only } from "../src/index.js";
 import {
   evaluateRules,
   matchesCodeownersPattern,
@@ -107,7 +107,7 @@ describe("resolveOwnersByFile()", () => {
   test("add layers on top of inherited own() owners", () => {
     const at = resolve({
       own: [own(platform, "*")],
-      match: [match("**/partner.json", { add: [partner] })],
+      rules: [add(partner, "**/partner.json")],
     });
     expect(at("config/other/partner.json")).toEqual([platform, partner]);
   });
@@ -115,7 +115,7 @@ describe("resolveOwnersByFile()", () => {
   test("only replaces inherited owners", () => {
     const at = resolve({
       own: [own(platform, "*")],
-      match: [match("config/air-email/**", { only: [air] })],
+      rules: [only(air, "config/air-email/**")],
     });
     expect(at("config/air-email/partner.json")).toEqual([air]);
   });
@@ -124,7 +124,7 @@ describe("resolveOwnersByFile()", () => {
     // Deliberate semantic change: own() is NOT preserved through only.
     const at = resolve({
       own: [own(platform, "*"), own(air, "config/air-email")],
-      match: [match("config/air-email/**", { only: [partner] })],
+      rules: [only(partner, "config/air-email/**")],
     });
     expect(at("config/air-email/partner.json")).toEqual([partner]);
   });
@@ -134,9 +134,9 @@ describe("resolveOwnersByFile()", () => {
   test("mode A: narrow add layers on the owners a prior only established", () => {
     const at = resolve({
       own: [own(platform, "*"), own(platform, "config")],
-      match: [
-        match("config/air-email/**", { only: [air] }),
-        match("config/air-email/partner.json", { add: [partner] }),
+      rules: [
+        only(air, "config/air-email/**"),
+        add(partner, "config/air-email/partner.json"),
       ],
     });
     expect(at("config/air-email/partner.json")).toEqual([air, partner]);
@@ -146,9 +146,9 @@ describe("resolveOwnersByFile()", () => {
   test("mode B: broad add reaches into a narrower only region", () => {
     const at = resolve({
       own: [own(platform, "*"), own(platform, "config")],
-      match: [
-        match("config/air-email/**", { only: [air] }),
-        match("**/partner.json", { add: [partner] }),
+      rules: [
+        only(air, "config/air-email/**"),
+        add(partner, "**/partner.json"),
       ],
     });
     expect(at("config/air-email/partner.json")).toEqual([air, partner]);
@@ -158,9 +158,9 @@ describe("resolveOwnersByFile()", () => {
   test("resolution follows declaration order, not pattern specificity", () => {
     const broadFirst = resolve({
       own: [own(platform, "*")],
-      match: [
-        match("**/partner.json", { add: [partner] }),
-        match("config/air-email/**", { only: [air] }),
+      rules: [
+        add(partner, "**/partner.json"),
+        only(air, "config/air-email/**"),
       ],
     });
     // only comes second, so it clobbers the add
@@ -170,9 +170,9 @@ describe("resolveOwnersByFile()", () => {
   test("add after add unions both", () => {
     const at = resolve({
       own: [own(platform, "*")],
-      match: [
-        match("config/air-email/**", { add: [air] }),
-        match("**/partner.json", { add: [partner] }),
+      rules: [
+        add(air, "config/air-email/**"),
+        add(partner, "**/partner.json"),
       ],
     });
     expect(at("config/air-email/partner.json")).toEqual([platform, air, partner]);
@@ -182,7 +182,7 @@ describe("resolveOwnersByFile()", () => {
     const at = resolve({
       always: [bot],
       own: [own(platform, "*")],
-      match: [match("config/air-email/**", { only: [air] })],
+      rules: [only(air, "config/air-email/**")],
     });
     expect(at("config/air-email/partner.json")).toEqual([air, bot]);
   });
@@ -190,7 +190,7 @@ describe("resolveOwnersByFile()", () => {
   test("does not duplicate an owner already present", () => {
     const at = resolve({
       own: [own(platform, "*")],
-      match: [match("**/partner.json", { add: [platform] })],
+      rules: [add(platform, "**/partner.json")],
     });
     expect(at("config/other/partner.json")).toEqual([platform]);
   });
@@ -204,7 +204,7 @@ describe("match patterns are anchored at the repository root", () => {
     const map = resolveOwnersByFile(
       {
         own: [own(platform, "libs/search")],
-        match: [match("**/.env*", { only: [security] })],
+        rules: [only(security, "**/.env*")],
       },
       files,
     );
@@ -217,7 +217,7 @@ describe("match patterns are anchored at the repository root", () => {
     const map = resolveOwnersByFile(
       {
         own: [own(platform, "*")],
-        match: [match("src/**/*.test.ts", { add: [qa] })],
+        rules: [add(qa, "src/**/*.test.ts")],
       },
       files,
     );
@@ -231,7 +231,7 @@ describe("match patterns are anchored at the repository root", () => {
     const map = resolveOwnersByFile(
       {
         own: [own(platform, "libs/search")],
-        match: [match("**/locales/**/*.json", { add: [i18n] })],
+        rules: [add(i18n, "**/locales/**/*.json")],
       },
       files,
     );

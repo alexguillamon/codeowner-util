@@ -4,7 +4,7 @@ import type {
   CodeOwnersConfig,
   FsLike,
   GenerateOptions,
-  MatchRule,
+  PolicyRule,
   ResolvedRule,
   Team,
 } from "./types.js";
@@ -62,8 +62,8 @@ export function generate(
   const emittedDirect = directGroups.flatMap((group) => group.rules);
 
   // 5. Compress the per-file owners back into patterns
-  const matchGroups = compressMatchRules(
-    config.match ?? [],
+  const ruleGroups = compressRules(
+    config.rules ?? [],
     files,
     stages,
     emittedDirect,
@@ -73,7 +73,7 @@ export function generate(
 
   // 6. Check the emitted rules, in the order they appear in the file
   verifyOutput(
-    [...emittedDirect, ...matchGroups.flatMap((g) => g.rules)],
+    [...emittedDirect, ...ruleGroups.flatMap((g) => g.rules)],
     ownersByFile,
   );
 
@@ -107,8 +107,8 @@ export function generate(
   }
 
   // Match rules, grouped by source pattern, in declaration order
-  for (const group of matchGroups) {
-    lines.push("", `# ── Match: ${group.pattern} ──`);
+  for (const group of ruleGroups) {
+    lines.push("", `# ── ${group.label} ──`);
     if (group.description) {
       lines.push(`# ${group.description}`);
     }
@@ -123,14 +123,14 @@ export function generate(
 
 // ── Internals ──────────────────────────────────────────
 
-interface PatternGroup {
-  pattern: string;
+interface RuleGroup {
+  label: string;
   description?: string;
   rules: ResolvedRule[];
 }
 
 /**
- * Turn per-file owners into CODEOWNERS lines, one group per match rule.
+ * Turn per-file owners into CODEOWNERS lines, one group per rule.
  *
  * For each rule:
  * 1. Collect the files that the rule matches.
@@ -140,82 +140,79 @@ interface PatternGroup {
  *
  * A final pass drops every line that does not change the result.
  */
-function compressMatchRules(
-  matchRules: readonly MatchRule[],
+function compressRules(
+  policyRules: readonly PolicyRule[],
   files: readonly string[],
   stages: readonly Map<string, Team[]>[],
   directRules: readonly ResolvedRule[],
   flatEntries: readonly FlatEntry[],
   always: readonly Team[],
-): PatternGroup[] {
-  const groups: PatternGroup[] = [];
+): RuleGroup[] {
+  const groups: RuleGroup[] = [];
 
   const ownersByFile = stages[stages.length - 1];
 
-  for (const [ruleIndex, rule] of matchRules.entries()) {
-    const matched = files.filter((f) =>
-      matchesCodeownersPattern(rule.pattern, f),
-    );
-    if (matched.length === 0) continue;
-
+  for (const [ruleIndex, rule] of policyRules.entries()) {
     // The state after this rule, so a later rule's change is not blamed here.
     const afterThisRule = stages[ruleIndex + 1];
+    const beforeThisRule = stages[ruleIndex];
     const ownersOf = (f: string) => afterThisRule.get(f) ?? [];
+    const catchAll = flatEntries.find((e) => e.path === "*");
     const lines: ResolvedRule[] = [];
 
-    // A broad line first, so later scoped lines can override it.
-    //
-    // An `only` rule sets its owners outright, so one global line states the
-    // whole rule. An `add` rule stacks on inherited owners, so a global line
-    // is correct only for files that inherit from the catch-all. Without a
-    // catch-all there is no safe global line, and every line names a scope.
-    const catchAll = flatEntries.find((e) => e.path === "*");
-    if ("only" in rule) {
-      lines.push({
-        path: rule.pattern,
-        owners: unique([...rule.only, ...always]),
-      });
-    } else if (catchAll) {
-      // Pick a file that still holds exactly the catch-all owners when this
-      // rule starts. Comparing against own() alone is not enough: an earlier
-      // rule may already have changed the file, and then the global line
-      // would carry that earlier rule's teams to unrelated files.
-      const catchAllOwners = unique([...catchAll.owners, ...always]);
-      const beforeThisRule = stages[ruleIndex];
-      const inherited = matched.find((f) =>
-        sameOwners(beforeThisRule.get(f) ?? [], catchAllOwners),
-      );
-      if (inherited) {
-        lines.push({ path: rule.pattern, owners: ownersOf(inherited) });
+    // A rule may carry several patterns. Each one is compressed on its own,
+    // because a scope only means something relative to one pattern.
+    for (const pattern of rule.patterns) {
+      const matched = files.filter((f) => matchesCodeownersPattern(pattern, f));
+      if (matched.length === 0) continue;
+
+      // A broad line first, so later scoped lines can override it.
+      //
+      // An `only` rule sets its owners outright, so one global line states the
+      // whole rule. An `add` rule stacks on inherited owners, so a global line
+      // is correct only for files that inherit from the catch-all. Without a
+      // catch-all there is no safe global line, and every line names a scope.
+      if (rule.kind === "only") {
+        lines.push({ path: pattern, owners: unique([...rule.owners, ...always]) });
+      } else if (catchAll) {
+        // Pick a file that still holds exactly the catch-all owners when this
+        // rule starts. Comparing against own() alone is not enough: an earlier
+        // rule may already have changed the file, and then the global line
+        // would carry that earlier rule's teams to unrelated files.
+        const catchAllOwners = unique([...catchAll.owners, ...always]);
+        const inherited = matched.find((f) =>
+          sameOwners(beforeThisRule.get(f) ?? [], catchAllOwners),
+        );
+        if (inherited) lines.push({ path: pattern, owners: ownersOf(inherited) });
       }
-    }
 
-    // Then one line per scope, for the scopes that differ.
-    const byScope = new Map<string, string[]>();
-    for (const f of matched) {
-      const scope = scopeFor(rule.pattern, f);
-      const list = byScope.get(scope);
-      if (list) list.push(f);
-      else byScope.set(scope, [f]);
-    }
+      // Then one line per scope, for the scopes that differ.
+      const byScope = new Map<string, string[]>();
+      for (const f of matched) {
+        const scope = scopeFor(pattern, f);
+        const list = byScope.get(scope);
+        if (list) list.push(f);
+        else byScope.set(scope, [f]);
+      }
 
-    for (const [scope, scopeFiles] of byScope) {
-      const keys = new Set(scopeFiles.map((f) => ownerKey(ownersOf(f))));
-      if (keys.size === 1) {
-        lines.push({
-          path: scopedPath(rule.pattern, scope),
-          owners: ownersOf(scopeFiles[0]),
-        });
-      } else {
-        // Last resort: one line per file. Always correct, never ambiguous.
-        for (const f of scopeFiles) {
-          lines.push({ path: f, owners: ownersOf(f) });
+      for (const [scope, scopeFiles] of byScope) {
+        const keys = new Set(scopeFiles.map((f) => ownerKey(ownersOf(f))));
+        if (keys.size === 1) {
+          lines.push({
+            path: scopedPath(pattern, scope),
+            owners: ownersOf(scopeFiles[0]),
+          });
+        } else {
+          // Last resort: one line per file. Always correct, never ambiguous.
+          for (const f of scopeFiles) lines.push({ path: f, owners: ownersOf(f) });
         }
       }
     }
+
+    if (lines.length === 0) continue;
     lines.sort((a, b) => specificity(a.path) - specificity(b.path));
     groups.push({
-      pattern: rule.pattern,
+      label: `${rule.kind}: ${rule.patterns.join(", ")}`,
       description: rule.description,
       rules: lines,
     });
@@ -231,11 +228,11 @@ function compressMatchRules(
  * strings, it removes a line and checks whether any file changes owner.
  */
 function dropRedundantLines(
-  groups: PatternGroup[],
+  groups: RuleGroup[],
   directRules: readonly ResolvedRule[],
   ownersByFile: Map<string, Team[]>,
   files: readonly string[],
-): PatternGroup[] {
+): RuleGroup[] {
   interface Line {
     groupIndex: number;
     rule: ResolvedRule;

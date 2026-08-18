@@ -2,17 +2,26 @@ import { describe, expect, test, beforeEach, afterEach } from "bun:test";
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { Volume } from "memfs";
-import { team, own, match, generate, write } from "../src/index.js";
+import { team, own, add, only, generate, write } from "../src/index.js";
 import type { CodeOwnersConfig, Team } from "../src/index.js";
 
-// ── match() validation ─────────────────────────────────
+// ── rule construction ──────────────────────────────────
 
-describe("match() validation", () => {
-  test("throws when neither add nor only is provided", () => {
-    expect(() => {
-      // @ts-expect-error — intentionally passing invalid options
-      match("**/*.json", {});
-    }).toThrow();
+describe("rule construction", () => {
+  test("only() and add() are separate functions, so the kind is never missing", () => {
+    expect(only([], "**/secrets").kind).toBe("only");
+    expect(add(team("@org/qa"), "**/*.test.ts").kind).toBe("add");
+  });
+
+  test("a single owner and a single pattern do not need arrays", () => {
+    const rule = add(team("@org/qa"), "**/*.test.ts");
+    expect(rule.owners).toEqual([team("@org/qa")]);
+    expect(rule.patterns).toEqual(["**/*.test.ts"]);
+  });
+
+  test("a rule may carry several patterns", () => {
+    const rule = only(team("@org/sec"), ["**/.env*", "**/secrets"]);
+    expect(rule.patterns).toEqual(["**/.env*", "**/secrets"]);
   });
 });
 
@@ -22,7 +31,7 @@ describe("generate() output format", () => {
   test("no line should have trailing whitespace", () => {
     const config: CodeOwnersConfig = {
       own: [own(team("@org/team-a"), "libs/foo")],
-      match: [match("**/secrets", { only: [] })],
+      rules: [only([], "**/secrets")],
     };
     const output = generate(config);
     for (const line of output.split("\n")) {
@@ -52,7 +61,8 @@ describe("barrel exports", () => {
   test("all public API functions are importable from index", () => {
     expect(typeof team).toBe("function");
     expect(typeof own).toBe("function");
-    expect(typeof match).toBe("function");
+    expect(typeof only).toBe("function");
+    expect(typeof add).toBe("function");
     expect(typeof generate).toBe("function");
     expect(typeof write).toBe("function");
   });
@@ -379,7 +389,7 @@ describe("generate() with rootDir (filesystem-aware)", () => {
       ],
       // `add` stacks on inherited owners, so each directory needs its own
       // line. That is what makes "only where files exist" observable.
-      match: [match("**/locales/**/*.json", { add: [i18n] })],
+      rules: [add(i18n, "**/locales/**/*.json")],
     };
 
     const output = generate(config, { rootDir: "/repo", fs: vol as any });
@@ -399,7 +409,7 @@ describe("generate() with rootDir (filesystem-aware)", () => {
     const config: CodeOwnersConfig = {
       always: [bot],
       own: [own(teamA, "libs/search"), own(platform, "libs/config")],
-      match: [match("**/locales/**/*.json", { only: [i18n] })],
+      rules: [only(i18n, "**/locales/**/*.json")],
     };
 
     const output = generate(config, { rootDir: "/repo", fs: vol as any });
@@ -425,7 +435,7 @@ describe("generate() with rootDir (filesystem-aware)", () => {
         own(platform, "*"),
         own(teamA, "libs/search"),
       ],
-      match: [match("**/locales/en-US/**/*.json", { add: [i18n] })],
+      rules: [add(i18n, "**/locales/en-US/**/*.json")],
     };
 
     const output = generate(config, { rootDir: "/repo", fs: vol as any });
@@ -455,7 +465,7 @@ describe("generate() with rootDir (filesystem-aware)", () => {
         own(teamA, "libs/search"),
         own(teamB, "libs/billing"),
       ],
-      match: [match("**/locales/**/*.json", { only: [i18n] })],
+      rules: [only(i18n, "**/locales/**/*.json")],
     };
 
     const output = generate(config, { rootDir: "/repo", fs: vol as any });
@@ -477,7 +487,7 @@ describe("generate() with rootDir (filesystem-aware)", () => {
       own: [own(platform, "data/")],
       // `add` keeps the scoped line, which is what shows the trailing slash
       // was normalized in the emitted path.
-      match: [match("**/locales/**/*.json", { add: [i18n] })],
+      rules: [add(i18n, "**/locales/**/*.json")],
     };
 
     const output = generate(config, { rootDir: "/repo", fs: vol as any });
@@ -503,7 +513,7 @@ describe("generate() with rootDir (filesystem-aware)", () => {
         own(platform, "*"),
         own(teamA, "libs/search"),
       ],
-      match: [match("**/locales/**/*.json", { only: [i18n] })],
+      rules: [only(i18n, "**/locales/**/*.json")],
     };
 
     const output = generate(config, { rootDir: "/repo", fs: vol as any });
@@ -532,7 +542,7 @@ describe("generate() with rootDir (filesystem-aware)", () => {
         own(platform, "*"),
         own(teamA, "libs/search"),
       ],
-      match: [match("**/locales/en-US/**/*.json", { add: [i18n] })],
+      rules: [add(i18n, "**/locales/en-US/**/*.json")],
     };
 
     const output = generate(config, { rootDir: "/repo", fs: vol as any });
@@ -555,7 +565,7 @@ describe("generate() with rootDir (filesystem-aware)", () => {
         own(platform, "*"),
         own(teamB, "apps/admin-panel"),
       ],
-      match: [match("**/locales/en-US/**/*.json", { add: [i18n] })],
+      rules: [add(i18n, "**/locales/en-US/**/*.json")],
     };
 
     const output = generate(config, { rootDir: "/repo", fs: vol as any });
@@ -579,7 +589,7 @@ describe("generate() with rootDir (filesystem-aware)", () => {
         own(platform, "*"),
         own(teamB, "apps/admin-panel"),
       ],
-      match: [match("**/locales/en-US/**/*.json", { add: [i18n] })],
+      rules: [add(i18n, "**/locales/en-US/**/*.json")],
     };
 
     const output = generate(config, { rootDir: "/repo", fs: vol as any });
@@ -607,7 +617,7 @@ describe("generate() with rootDir (filesystem-aware)", () => {
         own(platform, "*"),
         own(teamA, "libs/search"),
       ],
-      match: [match("**/locales/en-US/**/*.json", { add: [i18n] })],
+      rules: [add(i18n, "**/locales/en-US/**/*.json")],
     };
 
     const output = generate(config, { rootDir: "/repo", fs: vol as any });

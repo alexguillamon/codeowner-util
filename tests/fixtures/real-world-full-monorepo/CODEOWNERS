@@ -37,6 +37,6 @@ libs/policies @org/enterprise @ci-bot
 # @org/media, @ci-bot
 libs/media @org/media @ci-bot
 
-# ── Match: **/locales/**/*.json ──
+# ── only: **/locales/**/*.json ──
 
 **/locales/**/*.json @org/i18n @ci-bot

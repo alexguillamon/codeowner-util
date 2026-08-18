@@ -8,6 +8,6 @@ libs/search @org/team-a @ci-bot
 # @org/team-b, @ci-bot
 libs/notifications @org/team-b @ci-bot
 
-# ── Match: **/locales/**/*.json ──
+# ── only: **/locales/**/*.json ──
 
 **/locales/**/*.json @org/i18n @ci-bot

@@ -1,4 +1,4 @@
-import { team, own, match } from "../../../src/index.js";
+import { team, own, add, only } from "../../../src/index.js";
 import type { CodeOwnersConfig } from "../../../src/index.js";
 
 const bot = team("@ci-bot");
@@ -12,9 +12,9 @@ const i18n = team("@org/i18n");
 const config: CodeOwnersConfig = {
   always: [bot],
   own: [own(teamA, "libs/search"), own(teamB, "libs/notifications")],
-  match: [
-    match("**/locales/**/*.json", { only: [i18n] }),
-    match("**/locales/en-US/**/*.json", { add: [i18n] }),
+  rules: [
+    only(i18n, "**/locales/**/*.json"),
+    add(i18n, "**/locales/en-US/**/*.json"),
   ],
 };
 

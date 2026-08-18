@@ -9,33 +9,42 @@ export interface OwnershipRule {
   readonly description?: string;
 }
 
-/** A match rule using `add` — adds owners on top of inherited ownership */
-export interface MatchAdd {
-  readonly pattern: string;
-  readonly add: readonly Team[];
-  /** Optional description — rendered as a comment above this match section */
+/** Replaces the owners of every file the patterns match */
+export interface OnlyRule {
+  readonly kind: "only";
+  readonly owners: readonly Team[];
+  readonly patterns: readonly string[];
+  /** Optional description — rendered as a comment above this section */
   readonly description?: string;
 }
 
-/** A match rule using `only` — replaces inherited ownership entirely */
-export interface MatchOnly {
-  readonly pattern: string;
-  readonly only: readonly Team[];
-  /** Optional description — rendered as a comment above this match section */
+/** Adds owners on top of the owners a file already has */
+export interface AddRule {
+  readonly kind: "add";
+  readonly owners: readonly Team[];
+  readonly patterns: readonly string[];
+  /** Optional description — rendered as a comment above this section */
   readonly description?: string;
 }
 
-export type MatchRule = MatchAdd | MatchOnly;
+/** A rule applied on top of `own()`, in declaration order */
+export type PolicyRule = OnlyRule | AddRule;
 
 export interface CodeOwnersConfig {
   /** Teams appended to every generated rule (e.g. a bot account) */
   readonly always?: readonly Team[];
 
-  /** Ownership declarations */
+  /**
+   * Ownership declarations. These form the base layer. The narrowest
+   * declaration that matches a file wins, so their order does not matter.
+   */
   readonly own: readonly OwnershipRule[];
 
-  /** Pattern-based rules applied across all owned paths */
-  readonly match?: readonly MatchRule[];
+  /**
+   * Rules applied on top of `own()`, in declaration order. Each rule builds
+   * on the result of the rule before it.
+   */
+  readonly rules?: readonly PolicyRule[];
 
   /** Team descriptions for documentation — keyed by team handle */
   readonly teams?: Readonly<Record<string, string>>;

@@ -10,19 +10,19 @@ There are two layers to ownership:
 
 `own()` is the source of truth. It's a direct declaration: these teams own these paths. If two teams both call `own()` on the same path, they share it. Nothing else in the system can remove an `own()` declaration.
 
-`match()` is for cross-cutting patterns. Things like "all locale files should be reviewed by the i18n team." Match rules apply to file patterns anchored at the repository root. They can add reviewers on top of existing ownership, or replace it outright.
+`only()` and `add()` are for cross-cutting patterns. Things like "all locale files should be reviewed by the i18n team." They apply to file patterns anchored at the repository root. `only()` replaces the owners outright. `add()` puts reviewers on top of the owners a file already has.
 
 ### The rules
 
 1. `own()` declarations merge. Two `own()` calls on the same path? Both teams are co-owners.
 
-2. `match(add)` stacks. It adds teams on top of the current owners.
+2. `add()` stacks. It puts teams on top of the current owners.
 
-3. `match(only)` replaces. It sets the owners outright and discards whatever came before, including a direct `own()` declaration. Use `add` when you want to keep the existing owners.
+3. `only()` replaces. It sets the owners outright and discards whatever came before, including a direct `own()` declaration. Use `add()` when you want to keep the existing owners.
 
 4. `always` is unconditional. Teams listed here are appended to every rule. Useful for bot accounts.
 
-5. Declaration order decides. Match rules run in the order you write them, and each one builds on the result of the last. Pattern specificity does not reorder them.
+5. Declaration order decides. Entries in `rules` run in the order you write them, and each one builds on the result of the last. Pattern specificity does not reorder them. `own()` is the base layer, so its order does not matter — the narrowest declaration wins.
 
 ## Install
 
@@ -35,7 +35,7 @@ npm install codeowners-util
 Create a `codeowners.config.ts` at your repo root:
 
 ```typescript
-import { team, own, match } from "codeowners-util";
+import { team, own, only, add } from "codeowners-util";
 import type { CodeOwnersConfig } from "codeowners-util";
 
 const bot = team("@ci-bot");
@@ -63,15 +63,13 @@ const config: CodeOwnersConfig = {
     ),
     own([search, platform], "apps/web/src/routes/search.ts"),
   ],
-  match: [
-    match("**/locales/**/*.json", {
-      only: [i18n],
-      description: "All locale files are reviewed by i18n",
-    }),
-    match("**/locales/en-US/**/*.json", {
-      add: [i18n],
-      description: "English source strings need both product team and i18n",
-    }),
+  rules: [
+    only(i18n, "**/locales/**/*.json", "All locale files are reviewed by i18n"),
+    add(
+      i18n,
+      "**/locales/en-US/**/*.json",
+      "English source strings need both product team and i18n",
+    ),
   ],
 };
 
@@ -104,14 +102,14 @@ own(teamB, "libs/core");
 // libs/core is co-owned by both
 ```
 
-### Pattern matching with `match()`
+### Cross-cutting rules with `only()` and `add()`
 
-Match rules apply file patterns across the repository.
+Rules apply file patterns across the repository, in declaration order.
 
 `add` adds teams on top of the current owners:
 
 ```typescript
-match("**/locales/en-US/**/*.json", { add: [i18n] });
+add(i18n, "**/locales/en-US/**/*.json");
 // If search owns libs/search:
 // libs/search/locales/en-US/**/*.json → @org/search @org/i18n
 ```
@@ -119,7 +117,7 @@ match("**/locales/en-US/**/*.json", { add: [i18n] });
 `only` replaces the current owners:
 
 ```typescript
-match("**/locales/**/*.json", { only: [i18n] });
+only(i18n, "**/locales/**/*.json");
 // Every locale file → @org/i18n, whoever owned it before
 ```
 
@@ -127,21 +125,21 @@ match("**/locales/**/*.json", { only: [i18n] });
 
 ```typescript
 own([checkout, platform], "apps/web/config/features/checkout");
-match("**/features/checkout/**", { only: [checkout] });
+only(checkout, "**/features/checkout/**");
 
 // Files inside apps/web/config/features/checkout/ → @org/checkout
 // @org/platform is gone, because `only` replaces.
-// Use add: [checkout] to keep @org/platform.
+// Use add(checkout, ...) to keep @org/platform.
 ```
 
 Rules run in the order you declare them, and each rule builds on the one before it:
 
 ```typescript
-match("**/locales/**/*.json", { only: [i18n] });      // 1. locales → i18n
-match("**/locales/en-US/**/*.json", { add: [qa] });   // 2. en-US → i18n + qa
+only(i18n, "**/locales/**/*.json");      // 1. locales → i18n
+add(qa, "**/locales/en-US/**/*.json");   // 2. en-US → i18n + qa
 ```
 
-Reversing those two lines gives a different result, because the `only` rule would then discard `@org/qa`.
+Reversing those two lines gives a different result, because `only()` would then discard `@org/qa`.
 
 ### How match patterns work
 
@@ -214,20 +212,20 @@ Rendered above the group:
 libs/config @org/platform @ci-bot
 ```
 
-### Match descriptions
+### Rule descriptions
 
 ```typescript
-match("**/locales/**/*.json", {
-  only: [i18n],
-  description:
-    "All locale files are reviewed by i18n, product teams opt in via en-US",
-});
+only(
+  i18n,
+  "**/locales/**/*.json",
+  "All locale files are reviewed by i18n, product teams opt in via en-US",
+);
 ```
 
-Rendered below the match header:
+Rendered below the rule header:
 
 ```
-# ── Match: **/locales/**/*.json ──
+# ── only: **/locales/**/*.json ──
 # All locale files are reviewed by i18n, product teams opt in via en-US
 ```
 
@@ -253,7 +251,7 @@ npx codeowners-util --check
 
 A CODEOWNERS line separates fields by spaces, and `#` starts a comment. A team handle or path that carries whitespace, a `#`, or a line break can therefore add or truncate rules in the generated file.
 
-`team()`, `own()` and `match()` reject those values, and `generate()` checks the whole config again. That second check matters when you build a config from data instead of literals:
+`team()`, `own()`, `only()` and `add()` reject those values, and `generate()` checks the whole config again. That second check matters when you build a config from data instead of literals:
 
 ```typescript
 // Throws, rather than writing "* @attacker" as an extra rule
@@ -280,9 +278,13 @@ Creates a typed team handle. The optional description is used in generated comme
 
 Declares ownership. Accepts a single team or array, and a single path or array.
 
-### `match(pattern, opts)`
+### `only(owners, patterns, description?)`
 
-Creates a pattern-based rule. `opts` must include either `{ add: [...] }` or `{ only: [...] }`, and can include `{ description: "..." }`.
+Replaces the owners of every file the patterns match. Accepts a single team or an array, and a single pattern or an array.
+
+### `add(owners, patterns, description?)`
+
+Adds owners on top of the owners a file already has. Same argument shape as `only()`.
 
 ### `generate(config, options?)`
 
@@ -312,10 +314,32 @@ console.log(result.upToDate);
 interface CodeOwnersConfig {
   always?: Team[];
   teams?: Record<string, string>;
+  /** Base layer. The narrowest declaration wins, so order does not matter. */
   own: OwnershipRule[];
-  match?: MatchRule[];
+  /** Applied on top of own(), in declaration order. */
+  rules?: PolicyRule[];
 }
 ```
+
+## Upgrading from 0.1.x
+
+`match()` is gone. It was two operations sharing one function, so it is now two functions, and both take the same arguments as `own()`:
+
+```typescript
+// before
+match: [
+  match("**/locales/**/*.json", { only: [i18n] }),
+  match("**/*.test.ts", { add: [qa], description: "QA reviews tests" }),
+];
+
+// after
+rules: [
+  only(i18n, "**/locales/**/*.json"),
+  add(qa, "**/*.test.ts", "QA reviews tests"),
+];
+```
+
+The `match` config key is now `rules`. Owners come first, patterns second, and both accept a single value or an array. Resolution semantics are unchanged.
 
 ## License
 

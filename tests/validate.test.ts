@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { Volume } from "memfs";
-import { generate, match, own, team } from "../src/index.js";
+import { generate, own, add, only, team } from "../src/index.js";
 import { globToRegExp } from "../src/glob.js";
 import type { CodeOwnersConfig, FsLike, Team } from "../src/types.js";
 
@@ -45,7 +45,7 @@ describe("team() rejects handles that would corrupt the output", () => {
 
 // ── paths and patterns ─────────────────────────────────
 
-describe("own() and match() reject paths that would corrupt the output", () => {
+describe("own() and rule patterns reject paths that would corrupt the output", () => {
   test("a newline in an own() path is rejected", () => {
     expect(() => own(team("@org/a"), "x\n* @attacker")).toThrow(/own\(\) path/);
   });
@@ -61,17 +61,17 @@ describe("own() and match() reject paths that would corrupt the output", () => {
     expect(() => own(t, "apps/web/src/routes/search.ts")).not.toThrow();
   });
 
-  test("a newline in a match() pattern is rejected", () => {
+  test("a newline in a rule pattern is rejected", () => {
     expect(() =>
-      match("**/*.json\n* @attacker", { add: [team("@org/a")] }),
-    ).toThrow(/match\(\) pattern/);
+      add(team("@org/a"), "**/*.json\n* @attacker"),
+    ).toThrow(/rule pattern/);
   });
 
   test("normal glob patterns still work", () => {
     const t = team("@org/a");
-    expect(() => match("**/locales/**/*.json", { add: [t] })).not.toThrow();
-    expect(() => match("src/**/*.test.ts", { only: [t] })).not.toThrow();
-    expect(() => match("**/.env*", { only: [t] })).not.toThrow();
+    expect(() => add(t, "**/locales/**/*.json")).not.toThrow();
+    expect(() => only(t, "src/**/*.test.ts")).not.toThrow();
+    expect(() => only(t, "**/.env*")).not.toThrow();
   });
 
   test("a newline in an own() description is rejected", () => {

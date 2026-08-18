@@ -1,12 +1,12 @@
-export { team, own, match, teamDescriptions } from "./api.js";
+export { team, own, only, add, teamDescriptions } from "./api.js";
 export { generate } from "./generate.js";
 export { write } from "./write.js";
 export type {
   Team,
   OwnershipRule,
-  MatchRule,
-  MatchAdd,
-  MatchOnly,
+  PolicyRule,
+  OnlyRule,
+  AddRule,
   CodeOwnersConfig,
   ResolvedRule,
   FsLike,
