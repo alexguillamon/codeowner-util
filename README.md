@@ -177,7 +177,20 @@ rules: [
 
 Without `!` you cannot express this. `only()` would take the English files too, and no later rule can give a file back an owner that varies per directory.
 
-A rule needs at least one pattern that is not an exclusion, otherwise it selects nothing. That throws.
+Two details differ from `.gitignore`, both deliberately:
+
+- **Order does not matter.** In `.gitignore` a later `!` re-includes something an earlier line excluded. Here every `!` pattern is an exclusion, wherever it sits in the array, so the two orders below mean the same thing.
+
+  ```typescript
+  only(commerceDev, ["**/locales/**/*.json", "!**/locales/en-US/**"]);
+  only(commerceDev, ["!**/locales/en-US/**", "**/locales/**/*.json"]);
+  ```
+
+- **Only a rule pattern may start with `!`.** GitHub does not support negation in a CODEOWNERS file, so a line beginning with `!` is a syntax error there. The marker is stripped before anything is written, and an `own()` path starting with `!` is rejected.
+
+A rule needs at least one pattern that is not an exclusion, otherwise it selects nothing. That throws, as does a bare `"!"`.
+
+A `!` anywhere other than the first character is literal, so `**/!important.json` matches a file named `!important.json`.
 
 The generator reads the real files in your repository, works out the exact owner set for every file, then writes the smallest set of rules that reproduces those owners. It checks the result before writing. If a directory holds no matching file, no rule is emitted for it.
 

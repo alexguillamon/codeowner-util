@@ -18,6 +18,7 @@ const WHITESPACE = /\s/;
  * a team handle, an `own()` path, or a rule pattern.
  */
 export function assertToken(kind: string, value: string): void {
+  assertWritablePath(kind, value);
   if (typeof value !== "string" || value.length === 0) {
     throw new Error(
       `codeowners-util: ${kind} must be a non-empty string. Got ${JSON.stringify(value)}.`,
@@ -29,6 +30,25 @@ export function assertToken(kind: string, value: string): void {
         `generated file: ${JSON.stringify(value)}\n` +
         `Remove any whitespace, "#", or control character. A CODEOWNERS line ` +
         `separates fields by spaces, and "#" starts a comment.`,
+    );
+  }
+}
+
+/**
+ * Reject a path that cannot be written to a CODEOWNERS file.
+ *
+ * GitHub does not support negation in CODEOWNERS, so a line starting with `!`
+ * is a syntax error there. Rule patterns use a leading `!` to exclude files,
+ * and that marker is stripped before anything is emitted, so it never reaches
+ * the file. Every other path must not start with one.
+ */
+export function assertWritablePath(kind: string, value: string): void {
+  if (typeof value === "string" && value.startsWith("!")) {
+    throw new Error(
+      `codeowners-util: ${kind} must not start with "!": ${JSON.stringify(value)}\n` +
+        "GitHub does not support negation in a CODEOWNERS file, so this line " +
+        "would be a syntax error. Only a rule pattern may start with \"!\", " +
+        "to exclude files from that rule.",
     );
   }
 }
@@ -57,7 +77,20 @@ export function assertText(kind: string, value: string | undefined): void {
  * so a rule made only of exclusions would select nothing.
  */
 export function assertPatterns(patterns: readonly string[]): void {
-  for (const pattern of patterns) assertToken("rule pattern", pattern);
+  for (const pattern of patterns) {
+    if (pattern.startsWith("!")) {
+      if (pattern.length === 1) {
+        throw new Error(
+          'codeowners-util: "!" on its own is an empty exclusion. Write the ' +
+            "pattern you want to exclude after it.",
+        );
+      }
+      // The marker is stripped before use, so only the rest must be valid.
+      assertToken("rule pattern", pattern.slice(1));
+      continue;
+    }
+    assertToken("rule pattern", pattern);
+  }
   if (!patterns.some((p) => !p.startsWith("!"))) {
     throw new Error(
       "codeowners-util: a rule needs at least one pattern that is not an " +

@@ -21,7 +21,7 @@ import {
   walkFiles,
   type FlatEntry,
 } from "./resolve.js";
-import { assertConfig } from "./validate.js";
+import { assertConfig, assertWritablePath } from "./validate.js";
 
 /**
  * Generate CODEOWNERS file content from a config.
@@ -339,6 +339,8 @@ function verifyOutput(
   rules: readonly ResolvedRule[],
   ownersByFile: Map<string, Team[]>,
 ): void {
+  for (const rule of rules) assertWritablePath("a generated rule path", rule.path);
+
   for (const [file, want] of ownersByFile) {
     const got = evaluateRules(rules, file);
     if (sameOwners(got, want)) continue;

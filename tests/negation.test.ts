@@ -148,3 +148,32 @@ describe("rule patterns", () => {
     ).not.toThrow();
   });
 });
+
+// ── a ! must never reach the generated file ────────────
+
+describe("a leading ! cannot be written to CODEOWNERS", () => {
+  test("an own() path starting with ! is rejected", () => {
+    // GitHub does not support negation in CODEOWNERS, so the line would be a
+    // syntax error there. 0.x emitted it silently.
+    expect(() => own(security, "!important")).toThrow(/negation/i);
+  });
+
+  test("a pattern that is only an exclusion marker is rejected", () => {
+    expect(() => only(security, ["**/*.json", "!"])).toThrow(/empty/i);
+  });
+
+  test("a derived path never starts with !", () => {
+    // A repair line is scoped from a real directory, so a directory named
+    // "!weird" would otherwise produce "!weird/gen/**".
+    const config: CodeOwnersConfig = {
+      own: [own(commerceDev, "*")],
+      rules: [only(security, ["**/*.json", "!**/gen/**"])],
+    };
+    expect(() =>
+      generate(config, {
+        rootDir: "/repo",
+        fs: vol(["!weird/x.json", "!weird/gen/y.json"]),
+      }),
+    ).toThrow(/negation/i);
+  });
+});
