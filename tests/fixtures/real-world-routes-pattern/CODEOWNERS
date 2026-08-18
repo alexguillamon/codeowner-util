@@ -4,9 +4,6 @@
 
 # @org/platform, @ci-bot
 * @org/platform @ci-bot
-apps/web/src/routes/auth.ts @org/platform @ci-bot
-apps/web/src/routes/search.ts @org/platform @ci-bot
-apps/web/src/routes/notifications.ts @org/platform @ci-bot
 
 # @org/team-a, @ci-bot
 libs/auth @org/team-a @ci-bot
@@ -14,3 +11,8 @@ libs/search @org/team-a @ci-bot
 
 # @org/team-b, @ci-bot
 libs/notifications @org/team-b @ci-bot
+
+# @org/platform, @ci-bot
+apps/web/src/routes/auth.ts @org/platform @ci-bot
+apps/web/src/routes/search.ts @org/platform @ci-bot
+apps/web/src/routes/notifications.ts @org/platform @ci-bot

@@ -13,6 +13,7 @@ import {
   flattenOwnership,
   matchesCodeownersPattern,
   resolveOwnerStages,
+  specificity,
   unique,
   walkFiles,
   type FlatEntry,
@@ -55,19 +56,24 @@ export function generate(
   const stages = resolveOwnerStages(config, files);
   const ownersByFile = stages[stages.length - 1];
 
-  // 4. Compress the per-file owners back into patterns
+  // 4. Group the direct rules exactly as they will be written. Grouping must
+  //    not reorder them, so this order is what the checks below rely on.
+  const directGroups = groupByOwners(directRules, flatEntries);
+  const emittedDirect = directGroups.flatMap((group) => group.rules);
+
+  // 5. Compress the per-file owners back into patterns
   const matchGroups = compressMatchRules(
     config.match ?? [],
     files,
     stages,
-    directRules,
+    emittedDirect,
     flatEntries,
     always,
   );
 
-  // 5. Check the emitted rules against ground truth
+  // 6. Check the emitted rules, in the order they appear in the file
   verifyOutput(
-    [...directRules, ...matchGroups.flatMap((g) => g.rules)],
+    [...emittedDirect, ...matchGroups.flatMap((g) => g.rules)],
     ownersByFile,
   );
 
@@ -79,8 +85,7 @@ export function generate(
   // Direct ownership, grouped by team
   if (directRules.length > 0) {
     lines.push("", "# ── Direct ownership ──────────────────────────────");
-    const grouped = groupByOwners(directRules, flatEntries);
-    for (const group of grouped) {
+    for (const group of directGroups) {
       lines.push("");
       // Add own() descriptions as comments above the group
       for (const desc of group.descriptions) {
@@ -339,11 +344,6 @@ function ownerKey(owners: readonly Team[]): string {
   return [...owners].sort().join(" ");
 }
 
-/** Count non-glob segments as a proxy for specificity */
-function specificity(pattern: string): number {
-  return pattern.split("/").filter((s) => s !== "**").length;
-}
-
 function sameOwners(a: readonly Team[], b: readonly Team[]): boolean {
   if (a.length !== b.length) return false;
   const setA = new Set(a);
@@ -376,9 +376,6 @@ function groupByOwners(
   rules: ResolvedRule[],
   flatEntries: FlatEntry[],
 ): OwnerGroup[] {
-  const groups: OwnerGroup[] = [];
-  const seen = new Map<string, OwnerGroup>();
-
   // Build lookup from path → descriptions
   const pathDescriptions = new Map<string, string[]>();
   for (const entry of flatEntries) {
@@ -387,30 +384,34 @@ function groupByOwners(
     }
   }
 
+  // Group runs of neighbours only. Pulling a distant rule into an earlier
+  // group would move it ahead of a broader rule, and the broader rule would
+  // then win under last-match-wins. Two runs may carry the same label.
+  const groups: OwnerGroup[] = [];
+  let current: OwnerGroup | undefined;
+  let currentKey: string | undefined;
+
   for (const rule of rules) {
     const key = rule.owners.join(" ");
-    const existing = seen.get(key);
-    if (existing) {
-      existing.rules.push(rule);
-      // Collect descriptions from this path
-      const descs = pathDescriptions.get(rule.path);
-      if (descs) {
-        for (const d of descs) {
-          if (!existing.descriptions.includes(d)) {
-            existing.descriptions.push(d);
-          }
+    const descriptions = pathDescriptions.get(rule.path) ?? [];
+
+    if (current && key === currentKey) {
+      current.rules.push(rule);
+      for (const description of descriptions) {
+        if (!current.descriptions.includes(description)) {
+          current.descriptions.push(description);
         }
       }
-    } else {
-      const descs = pathDescriptions.get(rule.path) ?? [];
-      const group: OwnerGroup = {
-        label: rule.owners.length > 0 ? rule.owners.join(", ") : "(no owners)",
-        descriptions: [...descs],
-        rules: [rule],
-      };
-      seen.set(key, group);
-      groups.push(group);
+      continue;
     }
+
+    current = {
+      label: rule.owners.length > 0 ? rule.owners.join(", ") : "(no owners)",
+      descriptions: [...descriptions],
+      rules: [rule],
+    };
+    currentKey = key;
+    groups.push(current);
   }
 
   return groups;

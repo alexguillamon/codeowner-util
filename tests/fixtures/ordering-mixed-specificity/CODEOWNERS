@@ -10,7 +10,9 @@ libs/billing @org/team-b
 
 # @org/team-a
 libs/auth @org/team-a
-apps/web/src/components @org/team-a
 
 # @org/team-c
 apps/web/src @org/team-c
+
+# @org/team-a
+apps/web/src/components @org/team-a

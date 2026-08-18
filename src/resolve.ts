@@ -76,26 +76,36 @@ export function flattenOwnership(rules: readonly OwnershipRule[]): FlatEntry[] {
 }
 
 /**
- * Find the owners for a path by matching against the most specific owned
- * prefix. Falls back to catch-all `*` if nothing else matches.
+ * Rank a pattern by how narrow it is. The generator sorts emitted rules by
+ * this number, ascending, so a narrower rule is written later and wins under
+ * GitHub's last-match-wins evaluation.
+ *
+ * The resolver ranks `own()` paths with the same function. If the two ever
+ * used different rankings they would disagree about who owns a file.
+ */
+export function specificity(pattern: string): number {
+  if (pattern === "*") return 0;
+  return pattern.split("/").filter((s) => s !== "**").length;
+}
+
+/**
+ * Find the owners of a path from the `own()` declarations.
+ *
+ * This mirrors how the emitted file is read: every declaration that matches
+ * is a candidate, the narrowest one wins, and declaration order breaks a tie
+ * in favour of the later one. Paths may contain globs, so the check uses the
+ * same matcher as the emitted rules.
  */
 export function findOwners(path: string, flatEntries: readonly FlatEntry[]): Team[] {
   let bestMatch: FlatEntry | undefined;
-  let bestLen = -1;
+  let bestRank = -1;
 
   for (const entry of flatEntries) {
-    if (entry.path === "*") {
-      if (bestLen < 0) {
-        bestMatch = entry;
-        bestLen = 0;
-      }
-      continue;
-    }
-    if (path === entry.path || path.startsWith(entry.path + "/")) {
-      if (entry.path.length > bestLen) {
-        bestMatch = entry;
-        bestLen = entry.path.length;
-      }
+    if (!matchesCodeownersPattern(entry.path, path)) continue;
+    const rank = specificity(entry.path);
+    if (rank >= bestRank) {
+      bestMatch = entry;
+      bestRank = rank;
     }
   }
 
