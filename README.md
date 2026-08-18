@@ -321,7 +321,7 @@ interface CodeOwnersConfig {
 }
 ```
 
-## Upgrading from 0.1.x
+## Upgrading to 1.0
 
 `match()` is gone. It was two operations sharing one function, so it is now two functions, and both take the same arguments as `own()`:
 
