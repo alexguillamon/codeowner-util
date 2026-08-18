@@ -5,10 +5,10 @@
 # @org/team-a, @ci-bot
 libs/search @org/team-a @ci-bot
 
-# ── Match: src/**/*.test.ts ──
-
-libs/search/src/**/*.test.ts @org/team-a @org/qa @ci-bot
-
 # ── Match: **/locales/en-US/**/*.json ──
 
 libs/search/locales/en-US/**/*.json @org/team-a @org/i18n @ci-bot
+
+# ── Match: **/src/**/*.test.ts ──
+
+libs/search/src/**/*.test.ts @org/team-a @org/qa @ci-bot

@@ -11,6 +11,4 @@ libs/notifications @org/team-b
 
 # ── Match: **/locales/**/*.json ──
 
-libs/search/locales/**/*.json @org/i18n
-libs/auth/locales/**/*.json @org/i18n
-libs/notifications/locales/**/*.json @org/i18n
+**/locales/**/*.json @org/i18n

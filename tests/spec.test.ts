@@ -377,7 +377,9 @@ describe("generate() with rootDir (filesystem-aware)", () => {
         own(teamA, "libs/search"),
         own(platform, "libs/config"),
       ],
-      match: [match("**/locales/**/*.json", { only: [i18n] })],
+      // `add` stacks on inherited owners, so each directory needs its own
+      // line. That is what makes "only where files exist" observable.
+      match: [match("**/locales/**/*.json", { add: [i18n] })],
     };
 
     const output = generate(config, { rootDir: "/repo", fs: vol as any });
@@ -385,6 +387,27 @@ describe("generate() with rootDir (filesystem-aware)", () => {
     // Should emit locale rule for libs/search (locales exist)
     expect(output).toContain("libs/search/locales/**/*.json");
     // Should NOT emit locale rule for libs/config (no locales dir)
+    expect(output).not.toContain("libs/config/locales");
+  });
+
+  test("an only rule emits one global line, not a copy per directory", () => {
+    const vol = createVolume({
+      "libs/search/locales/en-US/common.json": "{}",
+      "libs/config/locales/en-US/common.json": "{}",
+    });
+
+    const config: CodeOwnersConfig = {
+      always: [bot],
+      own: [own(teamA, "libs/search"), own(platform, "libs/config")],
+      match: [match("**/locales/**/*.json", { only: [i18n] })],
+    };
+
+    const output = generate(config, { rootDir: "/repo", fs: vol as any });
+
+    // `only` sets its owners outright, so location cannot change them. One
+    // line states the whole rule and still covers directories added later.
+    expect(output).toContain("**/locales/**/*.json @org/i18n @ci-bot");
+    expect(output).not.toContain("libs/search/locales");
     expect(output).not.toContain("libs/config/locales");
   });
 
@@ -452,7 +475,9 @@ describe("generate() with rootDir (filesystem-aware)", () => {
 
     const config: CodeOwnersConfig = {
       own: [own(platform, "data/")],
-      match: [match("**/locales/**/*.json", { only: [i18n] })],
+      // `add` keeps the scoped line, which is what shows the trailing slash
+      // was normalized in the emitted path.
+      match: [match("**/locales/**/*.json", { add: [i18n] })],
     };
 
     const output = generate(config, { rootDir: "/repo", fs: vol as any });

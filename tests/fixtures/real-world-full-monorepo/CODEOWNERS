@@ -40,22 +40,3 @@ libs/media @org/media @ci-bot
 # ── Match: **/locales/**/*.json ──
 
 **/locales/**/*.json @org/i18n @ci-bot
-
-# ── Match: **/locales/en-US/**/*.json ──
-
-**/locales/en-US/**/*.json @org/platform @org/i18n @ci-bot
-libs/auth/locales/en-US/**/*.json @org/team-a @org/i18n @ci-bot
-libs/auth-api/locales/en-US/**/*.json @org/team-a @org/i18n @ci-bot
-libs/search/locales/en-US/**/*.json @org/team-a @org/i18n @ci-bot
-libs/search-api/locales/en-US/**/*.json @org/team-a @org/i18n @ci-bot
-libs/billing/locales/en-US/**/*.json @org/team-b @org/i18n @ci-bot
-libs/billing-api/locales/en-US/**/*.json @org/team-b @org/i18n @ci-bot
-libs/payments/locales/en-US/**/*.json @org/team-b @org/i18n @ci-bot
-libs/analytics/locales/en-US/**/*.json @org/team-b @org/i18n @ci-bot
-libs/notifications/locales/en-US/**/*.json @org/team-c @org/i18n @ci-bot
-libs/notifications-api/locales/en-US/**/*.json @org/team-c @org/i18n @ci-bot
-libs/dashboard/locales/en-US/**/*.json @org/team-c @org/i18n @ci-bot
-apps/admin/locales/en-US/**/*.json @org/enterprise @org/i18n @ci-bot
-libs/admin-components/locales/en-US/**/*.json @org/enterprise @org/i18n @ci-bot
-libs/policies/locales/en-US/**/*.json @org/enterprise @org/i18n @ci-bot
-libs/media/locales/en-US/**/*.json @org/media @org/i18n @ci-bot

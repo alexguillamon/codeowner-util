@@ -18,10 +18,3 @@ apps/web/src/routes/search.ts @org/team-a @org/platform @ci-bot
 # All locale files are owned by the i18n team
 
 **/locales/**/*.json @org/i18n @ci-bot
-
-# ── Match: **/locales/en-US/**/*.json ──
-# English source strings need both product team and i18n review
-
-**/locales/en-US/**/*.json @org/platform @org/i18n @ci-bot
-libs/search/locales/en-US/**/*.json @org/team-a @org/i18n @ci-bot
-libs/search-api/locales/en-US/**/*.json @org/team-a @org/i18n @ci-bot

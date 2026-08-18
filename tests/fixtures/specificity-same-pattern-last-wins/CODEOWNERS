@@ -7,4 +7,4 @@ libs/search @org/team-a
 
 # ── Match: **/config/**/*.json ──
 
-libs/search/config/**/*.json @org/team-a @org/security
+libs/search/config/**/*.json @org/i18n @org/security

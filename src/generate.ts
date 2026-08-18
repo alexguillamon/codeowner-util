@@ -1,22 +1,33 @@
 import * as nodeFs from "node:fs";
-import { join, relative } from "node:path";
 import { teamDescriptions } from "./api.js";
 import type {
   CodeOwnersConfig,
   FsLike,
   GenerateOptions,
   MatchRule,
-  OwnershipRule,
   ResolvedRule,
   Team,
 } from "./types.js";
+import {
+  evaluateRules,
+  flattenOwnership,
+  matchesCodeownersPattern,
+  resolveOwnerStages,
+  unique,
+  walkFiles,
+  type FlatEntry,
+} from "./resolve.js";
 
 /**
  * Generate CODEOWNERS file content from a config.
  *
- * Match rules are resolved against the actual filesystem — only emitting
- * rules for directories that contain matching files, and discovering
- * directories not declared in `own()`.
+ * The generator works from ground truth. It reads the real files in the
+ * repository, computes the exact owner set for each file, then compresses
+ * those per-file owners into the smallest set of CODEOWNERS lines that
+ * reproduces them. It checks the result before it returns.
+ *
+ * Direct `own()` declarations are always emitted. The filesystem does not
+ * affect them, because an empty directory still has an owner.
  */
 export function generate(
   config: CodeOwnersConfig,
@@ -29,42 +40,33 @@ export function generate(
   // 1. Flatten ownership rules, normalizing paths
   const flatEntries = flattenOwnership(config.own);
 
-  // 2. Resolve direct ownership rules, sorted by specificity (ascending)
+  // 2. Direct ownership rules, sorted by specificity (ascending)
   const directRules: ResolvedRule[] = flatEntries.map((entry) => ({
     path: entry.path,
     owners: unique([...entry.owners, ...always]),
   }));
   directRules.sort((a, b) => specificity(a.path) - specificity(b.path));
 
-  // 3. Expand match rules against the filesystem
-  const matchedRules = expandMatchRules(
+  // 3. Ground truth: the exact owner set of every real file
+  const files = walkFiles(rootDir, fs);
+  const stages = resolveOwnerStages(config, files);
+  const ownersByFile = stages[stages.length - 1];
+
+  // 4. Compress the per-file owners back into patterns
+  const matchGroups = compressMatchRules(
     config.match ?? [],
-    flatEntries,
-    always,
-    rootDir,
-    fs,
-  );
-
-  // 4. Deduplicate: more specific pattern wins, equal specificity last wins
-  const deduped = deduplicateBySpecificity(matchedRules);
-
-  // 4b. Reconcile: when a global match(only) pattern would override a direct
-  //     own() declaration, emit per-path rules that preserve the direct owners.
-  //     own() is the source of truth — match() cannot strip explicitly declared owners.
-  const reconciled = reconcileDirectOwnership(
-    deduped,
-    matchedRules,
+    files,
+    stages,
+    directRules,
     flatEntries,
     always,
   );
 
-  // 5. Remove rules subsumed by a broader pattern with identical owners
-  //    e.g. **/locales/**/*.json already covers libs/air/locales/**/*.json
-  //    when both have the same owners (typical with `only` rules + catch-all)
-  const pruned = removeSubsumedRules(reconciled);
-
-  // 6. Sort match rules by specificity (ascending)
-  pruned.sort((a, b) => specificity(a.path) - specificity(b.path));
+  // 5. Check the emitted rules against ground truth
+  verifyOutput(
+    [...directRules, ...matchGroups.flatMap((g) => g.rules)],
+    ownersByFile,
+  );
 
   // 6. Format with sections and grouping
   const lines: string[] = [
@@ -96,18 +98,15 @@ export function generate(
     }
   }
 
-  // Match rules, grouped by source pattern
-  if (pruned.length > 0) {
-    const matchGroups = groupByPattern(pruned, matchedRules, config.match ?? []);
-    for (const group of matchGroups) {
-      lines.push("", `# ── Match: ${group.pattern} ──`);
-      if (group.description) {
-        lines.push(`# ${group.description}`);
-      }
-      lines.push("");
-      for (const rule of group.rules) {
-        lines.push(formatRule(rule));
-      }
+  // Match rules, grouped by source pattern, in declaration order
+  for (const group of matchGroups) {
+    lines.push("", `# ── Match: ${group.pattern} ──`);
+    if (group.description) {
+      lines.push(`# ${group.description}`);
+    }
+    lines.push("");
+    for (const rule of group.rules) {
+      lines.push(formatRule(rule));
     }
   }
 
@@ -116,632 +115,230 @@ export function generate(
 
 // ── Internals ──────────────────────────────────────────
 
-interface FlatEntry {
-  path: string;
-  owners: Team[];
-  /** Descriptions from own() calls that contributed to this entry */
-  descriptions: string[];
-}
-
-/** Normalize a path: strip trailing slashes */
-function normalizePath(p: string): string {
-  if (p === "/" || p === "*") return p;
-  return p.replace(/\/+$/, "");
+interface PatternGroup {
+  pattern: string;
+  description?: string;
+  rules: ResolvedRule[];
 }
 
 /**
- * Flatten ownership rules into one entry per unique path.
- * Normalizes paths and merges co-ownership automatically.
- */
-function flattenOwnership(rules: readonly OwnershipRule[]): FlatEntry[] {
-  const byPath = new Map<string, FlatEntry>();
-  const order: string[] = [];
-
-  for (const rule of rules) {
-    for (const rawPath of rule.paths) {
-      const path = normalizePath(rawPath);
-      const existing = byPath.get(path);
-      if (existing) {
-        for (const owner of rule.owners) {
-          if (!existing.owners.includes(owner)) {
-            existing.owners.push(owner);
-          }
-        }
-        if (rule.description && !existing.descriptions.includes(rule.description)) {
-          existing.descriptions.push(rule.description);
-        }
-      } else {
-        const entry: FlatEntry = {
-          path,
-          owners: [...rule.owners],
-          descriptions: rule.description ? [rule.description] : [],
-        };
-        byPath.set(path, entry);
-        order.push(path);
-      }
-    }
-  }
-
-  return order.map((path) => byPath.get(path)!);
-}
-
-interface ExpandedMatch {
-  resolvedPath: string;
-  owners: Team[];
-  sourcePattern: string;
-  /** Whether this match came from a match(only) rule */
-  isOnly: boolean;
-}
-
-/**
- * Expand match rules against the filesystem.
+ * Turn per-file owners into CODEOWNERS lines, one group per match rule.
  *
- * For each match rule:
- * 1. Catch-all `*` always produces a global pattern
- * 2. For each owned path, check the filesystem: is it a directory whose
- *    resolved pattern prefix exists? If so, emit the rule.
- * 3. Discover directories on disk that match but aren't declared in own().
+ * For each rule:
+ * 1. Collect the files that the rule matches.
+ * 2. If every matched file has the same owners, emit the pattern once.
+ * 3. Otherwise group the files by scope and emit one line per scope.
+ * 4. If one scope holds files with different owners, emit one line per file.
+ *
+ * A final pass drops every line that does not change the result.
  */
-function expandMatchRules(
+function compressMatchRules(
   matchRules: readonly MatchRule[],
-  flatEntries: FlatEntry[],
+  files: readonly string[],
+  stages: readonly Map<string, Team[]>[],
+  directRules: readonly ResolvedRule[],
+  flatEntries: readonly FlatEntry[],
   always: readonly Team[],
-  rootDir: string,
-  fs: FsLike,
-): ExpandedMatch[] {
-  const results: ExpandedMatch[] = [];
+): PatternGroup[] {
+  const groups: PatternGroup[] = [];
 
-  for (const rule of matchRules) {
-    const ownedDirPaths = new Set<string>();
-    const isOnly = "only" in rule;
+  const ownersByFile = stages[stages.length - 1];
 
-    for (const entry of flatEntries) {
-      if (entry.path === "*") {
-        // Catch-all always produces global pattern
-        const resolved = resolvePattern(entry.path, rule.pattern);
-        const owners: Team[] = isOnly
-          ? unique([...rule.only, ...always])
-          : unique([...entry.owners, ...rule.add, ...always]);
-        results.push({
-          resolvedPath: resolved,
-          owners,
-          sourcePattern: rule.pattern,
-          isOnly,
-        });
-        continue;
-      }
-
-      // Is this a directory on disk?
-      if (!isDirectory(join(rootDir, entry.path), fs)) continue;
-
-      ownedDirPaths.add(entry.path);
-
-      // Does the resolved pattern's directory prefix exist?
-      const resolved = resolvePattern(entry.path, rule.pattern);
-      if (!hasMatchingPath(resolved, rootDir, fs)) continue;
-
-      const owners: Team[] = isOnly
-        ? unique([...rule.only, ...always])
-        : unique([...entry.owners, ...rule.add, ...always]);
-
-      results.push({
-        resolvedPath: resolved,
-        owners,
-        sourcePattern: rule.pattern,
-        isOnly,
-      });
-    }
-
-    // Discover directories with matching files not in own()
-    const discoveredDirs = findMatchingDirectories(
-      rule.pattern,
-      rootDir,
-      fs,
+  for (const [ruleIndex, rule] of matchRules.entries()) {
+    const matched = files.filter((f) =>
+      matchesCodeownersPattern(rule.pattern, f),
     );
-    for (const dir of discoveredDirs) {
-      if (ownedDirPaths.has(dir)) continue;
+    if (matched.length === 0) continue;
 
-      const parentOwners = findOwners(dir, flatEntries);
-      const resolved = resolvePattern(dir, rule.pattern);
-      const owners: Team[] = isOnly
-        ? unique([...rule.only, ...always])
-        : unique([...parentOwners, ...rule.add, ...always]);
+    // The state after this rule, so a later rule's change is not blamed here.
+    const afterThisRule = stages[ruleIndex + 1];
+    const ownersOf = (f: string) => afterThisRule.get(f) ?? [];
+    const lines: ResolvedRule[] = [];
 
-      results.push({
-        resolvedPath: resolved,
-        owners,
-        sourcePattern: rule.pattern,
-        isOnly,
+    // A broad line first, so later scoped lines can override it.
+    //
+    // An `only` rule sets its owners outright, so one global line states the
+    // whole rule. An `add` rule stacks on inherited owners, so a global line
+    // is correct only for files that inherit from the catch-all. Without a
+    // catch-all there is no safe global line, and every line names a scope.
+    const catchAll = flatEntries.find((e) => e.path === "*");
+    if ("only" in rule) {
+      lines.push({
+        path: rule.pattern,
+        owners: unique([...rule.only, ...always]),
       });
+    } else if (catchAll) {
+      // Pick a file that still holds exactly the catch-all owners when this
+      // rule starts. Comparing against own() alone is not enough: an earlier
+      // rule may already have changed the file, and then the global line
+      // would carry that earlier rule's teams to unrelated files.
+      const catchAllOwners = unique([...catchAll.owners, ...always]);
+      const beforeThisRule = stages[ruleIndex];
+      const inherited = matched.find((f) =>
+        sameOwners(beforeThisRule.get(f) ?? [], catchAllOwners),
+      );
+      if (inherited) {
+        lines.push({ path: rule.pattern, owners: ownersOf(inherited) });
+      }
     }
-  }
 
-  return results;
-}
-
-/** Check if a path is a directory on disk */
-function isDirectory(absPath: string, fs: FsLike): boolean {
-  try {
-    return fs.statSync(absPath).isDirectory();
-  } catch {
-    return false;
-  }
-}
-
-/**
- * Check if a resolved pattern could match files on disk by verifying
- * that its non-glob directory prefix exists.
- *
- * "libs/search/locales/en/sample.json" → check "libs/search/locales/en"
- * "libs/search/.env*" → check "libs/search"
- */
-function hasMatchingPath(
-  resolvedPattern: string,
-  rootDir: string,
-  fs: FsLike,
-): boolean {
-  const segments = resolvedPattern.split("/");
-  const dirSegments: string[] = [];
-  for (const seg of segments) {
-    if (seg.includes("*") || seg.includes("?")) break;
-    dirSegments.push(seg);
-  }
-  // Remove the last segment if it's a filename (the directory is its parent)
-  if (dirSegments.length > 0) {
-    const last = dirSegments[dirSegments.length - 1];
-    if (last.includes(".")) {
-      dirSegments.pop();
+    // Then one line per scope, for the scopes that differ.
+    const byScope = new Map<string, string[]>();
+    for (const f of matched) {
+      const scope = scopeFor(rule.pattern, f);
+      const list = byScope.get(scope);
+      if (list) list.push(f);
+      else byScope.set(scope, [f]);
     }
-  }
-  const dirPath = dirSegments.join("/");
-  if (!dirPath) return true; // pattern starts with glob — always matches
-  return isDirectory(join(rootDir, dirPath), fs);
-}
 
-interface IgnorePattern {
-  baseRelDir: string;
-  anchored: boolean;
-  hasSlash: boolean;
-  regex: RegExp;
-}
-
-/**
- * Parse a .gitignore file into patterns scoped to the directory containing it.
- * Negations are skipped because ignored directories are never descended into.
- */
-function parseGitignore(content: string, baseRelDir: string): IgnorePattern[] {
-  const patterns: IgnorePattern[] = [];
-  for (const raw of content.split("\n")) {
-    const line = raw.trim();
-    if (!line || line.startsWith("#") || line.startsWith("!")) continue;
-
-    const anchored = line.startsWith("/");
-    const cleaned = line.replace(/^\/+/, "").replace(/\/+$/, "");
-    if (!cleaned) continue;
-
-    patterns.push({
-      baseRelDir,
-      anchored,
-      hasSlash: cleaned.includes("/"),
-      regex: globToRegExp(cleaned),
+    for (const [scope, scopeFiles] of byScope) {
+      const keys = new Set(scopeFiles.map((f) => ownerKey(ownersOf(f))));
+      if (keys.size === 1) {
+        lines.push({
+          path: scopedPath(rule.pattern, scope),
+          owners: ownersOf(scopeFiles[0]),
+        });
+      } else {
+        // Last resort: one line per file. Always correct, never ambiguous.
+        for (const f of scopeFiles) {
+          lines.push({ path: f, owners: ownersOf(f) });
+        }
+      }
+    }
+    lines.sort((a, b) => specificity(a.path) - specificity(b.path));
+    groups.push({
+      pattern: rule.pattern,
+      description: rule.description,
+      rules: lines,
     });
   }
-  return patterns;
+
+  return dropRedundantLines(groups, directRules, ownersByFile, files);
 }
 
 /**
- * Load ignore patterns from .gitignore + built-in defaults.
- */
-function loadIgnorePatterns(rootDir: string, fs: FsLike): IgnorePattern[] {
-  const patterns: IgnorePattern[] = [
-    createIgnorePattern("node_modules", ""),
-    createIgnorePattern(".git", ""),
-  ];
-
-  try {
-    const content = fs.readFileSync(join(rootDir, ".gitignore"), "utf-8");
-    patterns.push(...parseGitignore(content, ""));
-  } catch {
-    // No .gitignore or can't read it
-  }
-
-  return patterns;
-}
-
-function createIgnorePattern(pattern: string, baseRelDir: string): IgnorePattern {
-  return {
-    baseRelDir,
-    anchored: false,
-    hasSlash: pattern.includes("/"),
-    regex: globToRegExp(pattern),
-  };
-}
-
-/**
- * Load additional ignore patterns from a .gitignore file in the given directory.
- * Returns the new patterns (not including inherited ones).
- */
-function loadLocalIgnorePatterns(
-  absDir: string,
-  relDir: string,
-  fs: FsLike,
-): IgnorePattern[] {
-  try {
-    const content = fs.readFileSync(join(absDir, ".gitignore"), "utf-8");
-    return parseGitignore(content, relDir);
-  } catch {
-    return [];
-  }
-}
-
-/**
- * Check if a directory should be ignored based on the current ignore patterns.
- */
-function shouldIgnore(
-  name: string,
-  relPath: string,
-  ignorePatterns: readonly IgnorePattern[],
-): boolean {
-  return name.startsWith(".") || ignorePatterns.some((p) => matchesIgnore(p, relPath));
-}
-
-function matchesIgnore(pattern: IgnorePattern, relPath: string): boolean {
-  let scopedPath = relPath;
-
-  if (pattern.baseRelDir) {
-    if (relPath === pattern.baseRelDir) return false;
-    if (!relPath.startsWith(`${pattern.baseRelDir}/`)) return false;
-    scopedPath = relPath.slice(pattern.baseRelDir.length + 1);
-  }
-
-  if (!scopedPath) return false;
-
-  if (!pattern.hasSlash && !pattern.anchored) {
-    const basename = scopedPath.split("/").pop() ?? scopedPath;
-    return pattern.regex.test(basename);
-  }
-
-  return pattern.regex.test(scopedPath);
-}
-
-function globToRegExp(pattern: string): RegExp {
-  let source = "^";
-
-  for (let i = 0; i < pattern.length;) {
-    const char = pattern[i];
-    const next = pattern[i + 1];
-    const afterNext = pattern[i + 2];
-
-    if (char === "*" && next === "*" && afterNext === "/") {
-      source += "(?:.*\\/)?";
-      i += 3;
-      continue;
-    }
-
-    if (char === "*" && next === "*") {
-      source += ".*";
-      i += 2;
-      continue;
-    }
-
-    if (char === "*") {
-      source += "[^/]*";
-      i += 1;
-      continue;
-    }
-
-    if (char === "?") {
-      source += "[^/]";
-      i += 1;
-      continue;
-    }
-
-    source += escapeRegExp(char);
-    i += 1;
-  }
-
-  return new RegExp(`${source}$`);
-}
-
-function escapeRegExp(value: string): string {
-  return value.replace(/[|\\{}()[\]^$+?.]/g, "\\$&");
-}
-
-/**
- * Find all directories (relative to rootDir) that contain files matching
- * the given pattern. Extracts the directory anchor from the pattern and
- * walks the filesystem for it, skipping ignored directories BEFORE
- * descending into them to avoid scanning node_modules, .git, etc.
+ * Remove every emitted line that does not change the outcome.
  *
- * Respects nested .gitignore files: each directory's .gitignore is loaded
- * and merged into the ignore set for its subtree.
+ * This replaces the old subsumption heuristic. Instead of comparing pattern
+ * strings, it removes a line and checks whether any file changes owner.
  */
-function findMatchingDirectories(
-  pattern: string,
-  rootDir: string,
-  fs: FsLike,
-): Set<string> {
-  const dirs = new Set<string>();
-  const rootIgnorePatterns = loadIgnorePatterns(rootDir, fs);
-
-  // Extract the searchable directory anchor from the pattern.
-  const stripped = pattern.startsWith("**/") ? pattern.slice(3) : pattern;
-  const segments = stripped.split("/");
-  const anchorSegments: string[] = [];
-  for (const seg of segments) {
-    if (seg.includes("*") || seg.includes("?")) break;
-    anchorSegments.push(seg);
-  }
-  const anchor = anchorSegments.join("/");
-
-  if (!anchor) {
-    return dirs;
+function dropRedundantLines(
+  groups: PatternGroup[],
+  directRules: readonly ResolvedRule[],
+  ownersByFile: Map<string, Team[]>,
+  files: readonly string[],
+): PatternGroup[] {
+  interface Line {
+    groupIndex: number;
+    rule: ResolvedRule;
+    dropped: boolean;
   }
 
-  // Manual recursive walk with per-directory .gitignore support
-  function walk(
-    absDir: string,
-    relDir: string,
-    ignorePatterns: readonly IgnorePattern[],
-  ): void {
-    let entries: readonly { name: string; isDirectory(): boolean }[];
-    try {
-      entries = fs.readdirSync(absDir, { withFileTypes: true });
-    } catch {
-      return;
-    }
-
-    // Load local .gitignore and merge into a new set for this subtree
-    const localPatterns = loadLocalIgnorePatterns(absDir, relDir, fs);
-    const effectiveIgnore =
-      localPatterns.length > 0
-        ? [...ignorePatterns, ...localPatterns]
-        : ignorePatterns;
-
-    for (const entry of entries) {
-      if (!entry.isDirectory()) continue;
-
-      const name = entry.name;
-
-      const rel = relDir ? `${relDir}/${name}` : name;
-
-      // Skip before descending
-      if (shouldIgnore(name, rel, effectiveIgnore)) continue;
-
-      // Check if this directory matches the anchor
-      if (rel.endsWith(anchor) || rel.includes(`/${anchor}`)) {
-        const anchorIdx = rel.indexOf(anchor);
-        const parent = rel.slice(0, anchorIdx).replace(/\/$/, "");
-        if (parent) {
-          dirs.add(parent);
-        }
-      }
-
-      // Recurse with the effective ignore set
-      walk(join(absDir, name), rel, effectiveIgnore);
-    }
-  }
-
-  walk(rootDir, "", rootIgnorePatterns);
-  return dirs;
-}
-
-/**
- * Find the owners for a path by matching against the most specific owned
- * prefix. Falls back to catch-all `*` if nothing else matches.
- */
-function findOwners(path: string, flatEntries: FlatEntry[]): Team[] {
-  let bestMatch: FlatEntry | undefined;
-  let bestLen = -1;
-
-  for (const entry of flatEntries) {
-    if (entry.path === "*") {
-      if (bestLen < 0) {
-        bestMatch = entry;
-        bestLen = 0;
-      }
-      continue;
-    }
-    if (
-      path === entry.path ||
-      path.startsWith(entry.path + "/")
-    ) {
-      if (entry.path.length > bestLen) {
-        bestMatch = entry;
-        bestLen = entry.path.length;
-      }
-    }
-  }
-
-  return bestMatch ? [...bestMatch.owners] : [];
-}
-
-/**
- * When multiple match rules produce the same resolved path,
- * the more specific source pattern wins. Equal specificity: last wins.
- */
-function deduplicateBySpecificity(matches: ExpandedMatch[]): ResolvedRule[] {
-  const byPath = new Map<string, ExpandedMatch>();
-
-  for (const m of matches) {
-    const existing = byPath.get(m.resolvedPath);
-    if (
-      !existing ||
-      specificity(m.sourcePattern) >= specificity(existing.sourcePattern)
-    ) {
-      byPath.set(m.resolvedPath, m);
-    }
-  }
-
-  return Array.from(byPath.values()).map((m) => ({
-    path: m.resolvedPath,
-    owners: m.owners,
-  }));
-}
-
-/**
- * Reconcile match(only) rules with direct own() declarations.
- *
- * When a global match pattern (e.g. ** /features/checkout/**) with `only`
- * semantics would override a path that has explicit direct ownership, we
- * emit an additional per-path rule that merges the match's owners with
- * the directly declared owners. Because this per-path rule has higher
- * specificity, it wins in GitHub's last-match-wins evaluation — preserving
- * the direct ownership while still applying the match rule's intent.
- *
- * own() is the source of truth and cannot be overridden by match().
- */
-function reconcileDirectOwnership(
-  deduped: ResolvedRule[],
-  expanded: ExpandedMatch[],
-  flatEntries: FlatEntry[],
-  always: readonly Team[],
-): ResolvedRule[] {
-  // Identify global patterns that came from match(only) rules
-  const globalOnlyPaths = new Set<string>();
-  const globalPathToSource = new Map<string, string>();
-  for (const m of expanded) {
-    if (m.resolvedPath.startsWith("**/")) {
-      globalPathToSource.set(m.resolvedPath, m.sourcePattern);
-      if (m.isOnly) {
-        globalOnlyPaths.add(m.resolvedPath);
-      }
-    }
-  }
-
-  // Only reconcile global rules that came from match(only) — add rules already preserve owners
-  const globalOnlyRules = deduped.filter(
-    (r) => r.path.startsWith("**/") && globalOnlyPaths.has(r.path),
+  const lines: Line[] = groups.flatMap((g, groupIndex) =>
+    g.rules.map((rule) => ({ groupIndex, rule, dropped: false })),
   );
 
-  if (globalOnlyRules.length === 0) return deduped;
+  const holds = (): boolean => {
+    const active = [
+      ...directRules,
+      ...lines.filter((l) => !l.dropped).map((l) => l.rule),
+    ];
+    return files.every((f) =>
+      sameOwners(evaluateRules(active, f), ownersByFile.get(f) ?? []),
+    );
+  };
 
-  const result = [...deduped];
-
-  for (const globalRule of globalOnlyRules) {
-    const suffix = globalRule.path.slice(3); // strip "**/"
-    // suffix might be "features/checkout/**" or "locales/**/*.json"
-    // Extract the directory part (before any trailing glob)
-    const dirSuffix = extractDirSuffix(suffix);
-    if (!dirSuffix) continue;
-
-    const sourcePattern = globalPathToSource.get(globalRule.path) ?? globalRule.path;
-
-    for (const entry of flatEntries) {
-      if (entry.path === "*") continue;
-
-      // Check if this owned path falls under the global pattern
-      if (
-        entry.path.endsWith(dirSuffix) ||
-        entry.path.endsWith("/" + dirSuffix)
-      ) {
-        // This direct owned path would be matched by the global pattern.
-        // Check if the global rule is missing any of the direct owners.
-        const directOwners = unique([...entry.owners, ...always]);
-        const missingOwners = directOwners.filter(
-          (o) => !globalRule.owners.includes(o),
-        );
-
-        if (missingOwners.length > 0) {
-          // Emit a per-path rule that preserves the direct owners.
-          // The glob tail is the part of the suffix after the directory anchor
-          // e.g. suffix "features/checkout/**" with dirSuffix "features/checkout"
-          //      → globTail = "/**" → reconciledPath = "apps/portal/config/features/checkout/**"
-          const globTail = suffix.slice(dirSuffix.length);
-          const reconciledPath = `${entry.path}${globTail}`;
-          const reconciledOwners = unique([
-            ...globalRule.owners,
-            ...directOwners,
-          ]);
-
-          result.push({
-            path: reconciledPath,
-            owners: reconciledOwners,
-          });
-
-          // Also track in expanded matches so groupByPattern can find the source pattern
-          expanded.push({
-            resolvedPath: reconciledPath,
-            owners: reconciledOwners,
-            sourcePattern,
-            isOnly: true,
-          });
-        }
-      }
-    }
+  // Try the narrowest lines first. A narrow line that repeats what a broad
+  // line already says is the redundant one, so the broad line survives and
+  // keeps covering files that are added later.
+  for (const line of [...lines].reverse()) {
+    line.dropped = true;
+    if (!holds()) line.dropped = false;
   }
 
-  return result;
+  return groups
+    .map((g, i) => ({
+      ...g,
+      rules: lines
+        .filter((l) => l.groupIndex === i && !l.dropped)
+        .map((l) => l.rule),
+    }))
+    .filter((g) => g.rules.length > 0);
 }
 
 /**
- * Extract the non-glob directory suffix from a pattern.
- * "features/checkout/**" → "features/checkout"
- * "locales/**\/*.json" → "locales"
- * "*.json" → null (no directory component)
+ * Fail loudly when the emitted rules disagree with ground truth.
+ *
+ * A failure here means the compression step has a defect. It never means the
+ * config is wrong, so the message asks for a bug report.
  */
-function extractDirSuffix(suffix: string): string | null {
-  const segments = suffix.split("/");
-  const dirSegments: string[] = [];
-  for (const seg of segments) {
-    if (seg.includes("*") || seg.includes("?")) break;
-    dirSegments.push(seg);
+function verifyOutput(
+  rules: readonly ResolvedRule[],
+  ownersByFile: Map<string, Team[]>,
+): void {
+  for (const [file, want] of ownersByFile) {
+    const got = evaluateRules(rules, file);
+    if (sameOwners(got, want)) continue;
+    throw new Error(
+      [
+        "codeowners-util: the generated rules do not match the resolved owners.",
+        `  file:     ${file}`,
+        `  expected: ${want.join(" ") || "(no owners)"}`,
+        `  emitted:  ${got.join(" ") || "(no owners)"}`,
+        "This is a defect in codeowners-util. Please report it.",
+      ].join("\n"),
+    );
   }
-  return dirSegments.length > 0 ? dirSegments.join("/") : null;
+}
+
+/** The leading segments of a pattern that hold no glob characters. */
+function literalPrefix(tail: string): string {
+  const literal: string[] = [];
+  for (const segment of tail.split("/")) {
+    if (segment.includes("*") || segment.includes("?")) break;
+    literal.push(segment);
+  }
+  return literal.join("/");
 }
 
 /**
- * Resolve a match pattern relative to an owned path.
- * A leading double-star-slash prefix is stripped and scoped under the
- * owned path. Catch-all `*` keeps the pattern global.
+ * The path in front of a pattern's literal anchor, for one file.
+ *
+ * Pattern `**\/locales\/**\/*.json` and file `libs/a/locales/en/x.json` give
+ * `libs/a`. A root-anchored pattern has no scope.
  */
-function resolvePattern(ownedPath: string, pattern: string): string {
-  if (ownedPath === "*") {
-    return pattern;
+function scopeFor(pattern: string, file: string): string {
+  if (!pattern.startsWith("**/")) return "";
+
+  const fileSegments = file.split("/");
+  const parentDir = () => fileSegments.slice(0, -1).join("/");
+
+  const literal = literalPrefix(pattern.slice(3));
+  if (!literal) return parentDir();
+
+  const literalSegments = literal.split("/");
+  for (let i = 0; i + literalSegments.length <= fileSegments.length; i++) {
+    const hit = literalSegments.every((s, j) => fileSegments[i + j] === s);
+    if (hit) return fileSegments.slice(0, i).join("/");
   }
-  if (pattern.startsWith("**/")) {
-    return `${ownedPath}/${pattern.slice(3)}`;
-  }
-  return `${ownedPath}/${pattern}`;
+  return parentDir();
+}
+
+/** Re-anchor a pattern under a scope. */
+function scopedPath(pattern: string, scope: string): string {
+  if (!pattern.startsWith("**/")) return pattern;
+  const tail = pattern.slice(3);
+  return scope ? `${scope}/${tail}` : tail;
+}
+
+/** A stable key for an owner set, ignoring order. */
+function ownerKey(owners: readonly Team[]): string {
+  return [...owners].sort().join(" ");
 }
 
 /** Count non-glob segments as a proxy for specificity */
 function specificity(pattern: string): number {
   return pattern.split("/").filter((s) => s !== "**").length;
-}
-
-function unique(arr: readonly Team[]): Team[] {
-  return [...new Set(arr)];
-}
-
-/**
- * Remove rules that are subsumed by a broader pattern with identical owners.
- * A global pattern like ** /locales/*.json covers libs/air/locales/*.json —
- * if they have the same owners, the specific rule is redundant.
- */
-function removeSubsumedRules(rules: ResolvedRule[]): ResolvedRule[] {
-  // Collect all global patterns (starting with **/)
-  const globals = rules.filter((r) => r.path.startsWith("**/"));
-
-  if (globals.length === 0) return rules;
-
-  return rules.filter((rule) => {
-    // Don't filter out the global patterns themselves
-    if (rule.path.startsWith("**/")) return true;
-
-    // Check if any global pattern subsumes this rule with identical owners
-    for (const g of globals) {
-      const suffix = g.path.slice(3); // strip "**/""
-      if (
-        rule.path.endsWith(suffix) &&
-        sameOwners(g.owners, rule.owners)
-      ) {
-        return false; // subsumed — drop it
-      }
-    }
-
-    return true;
-  });
 }
 
 function sameOwners(a: readonly Team[], b: readonly Team[]): boolean {
@@ -809,57 +406,6 @@ function groupByOwners(
         rules: [rule],
       };
       seen.set(key, group);
-      groups.push(group);
-    }
-  }
-
-  return groups;
-}
-
-interface PatternGroup {
-  pattern: string;
-  description?: string;
-  rules: ResolvedRule[];
-}
-
-/**
- * Group match-expanded rules by their source pattern.
- * Preserves the specificity sort within each group.
- */
-function groupByPattern(
-  deduped: ResolvedRule[],
-  expanded: ExpandedMatch[],
-  matchRules: readonly MatchRule[],
-): PatternGroup[] {
-  // Build a map from resolved path → source pattern
-  const pathToPattern = new Map<string, string>();
-  for (const m of expanded) {
-    pathToPattern.set(m.resolvedPath, m.sourcePattern);
-  }
-
-  // Build a map from source pattern → description
-  const patternToDescription = new Map<string, string>();
-  for (const rule of matchRules) {
-    if (rule.description) {
-      patternToDescription.set(rule.pattern, rule.description);
-    }
-  }
-
-  const groups: PatternGroup[] = [];
-  const seen = new Map<string, PatternGroup>();
-
-  for (const rule of deduped) {
-    const pattern = pathToPattern.get(rule.path) ?? "unknown";
-    const existing = seen.get(pattern);
-    if (existing) {
-      existing.rules.push(rule);
-    } else {
-      const group: PatternGroup = {
-        pattern,
-        description: patternToDescription.get(pattern),
-        rules: [rule],
-      };
-      seen.set(pattern, group);
       groups.push(group);
     }
   }

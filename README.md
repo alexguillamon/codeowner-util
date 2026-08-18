@@ -10,19 +10,19 @@ There are two layers to ownership:
 
 `own()` is the source of truth. It's a direct declaration: these teams own these paths. If two teams both call `own()` on the same path, they share it. Nothing else in the system can remove an `own()` declaration.
 
-`match()` is for cross-cutting patterns. Things like "all locale files should be reviewed by the i18n team." Match rules operate on file patterns within owned directories. They can add reviewers on top of existing ownership, or replace inherited ownership, but they can't strip teams that were explicitly declared with `own()`.
+`match()` is for cross-cutting patterns. Things like "all locale files should be reviewed by the i18n team." Match rules apply to file patterns anchored at the repository root. They can add reviewers on top of existing ownership, or replace it outright.
 
 ### The rules
 
 1. `own()` declarations merge. Two `own()` calls on the same path? Both teams are co-owners.
 
-2. `match(add)` stacks. Adds teams on top of whoever owns the directory.
+2. `match(add)` stacks. It adds teams on top of the current owners.
 
-3. `match(only)` replaces inherited owners, but not direct ones. If a directory's ownership comes from a parent (inherited), `only` replaces it. If the path has its own `own()` declaration, those owners stay.
+3. `match(only)` replaces. It sets the owners outright and discards whatever came before, including a direct `own()` declaration. Use `add` when you want to keep the existing owners.
 
 4. `always` is unconditional. Teams listed here are appended to every rule. Useful for bot accounts.
 
-5. Specificity resolves conflicts. When two match rules hit the same path, the more specific pattern wins. Same specificity? Last declared wins.
+5. Declaration order decides. Match rules run in the order you write them, and each one builds on the result of the last. Pattern specificity does not reorder them.
 
 ## Install
 
@@ -106,9 +106,9 @@ own(teamB, "libs/core");
 
 ### Pattern matching with `match()`
 
-Match rules apply file-level patterns across owned directories.
+Match rules apply file patterns across the repository.
 
-`add` adds teams on top of whoever owns the directory:
+`add` adds teams on top of the current owners:
 
 ```typescript
 match("**/locales/en-US/**/*.json", { add: [i18n] });
@@ -116,44 +116,50 @@ match("**/locales/en-US/**/*.json", { add: [i18n] });
 // libs/search/locales/en-US/**/*.json → @org/search @org/i18n
 ```
 
-`only` replaces inherited ownership for matching files:
+`only` replaces the current owners:
 
 ```typescript
 match("**/locales/**/*.json", { only: [i18n] });
-// libs/search/locales/**/*.json → @org/i18n (search is not included)
+// Every locale file → @org/i18n, whoever owned it before
 ```
 
-But `only` cannot override direct `own()` declarations:
+`only` discards a direct `own()` declaration too:
 
 ```typescript
 own([checkout, platform], "apps/web/config/features/checkout");
 match("**/features/checkout/**", { only: [checkout] });
 
-// Files inside apps/web/config/features/checkout/:
-//   → @org/checkout @org/platform
-//   platform was directly declared with own(), it stays
-//
-// Files inside any OTHER features/checkout/ directory:
-//   → @org/checkout only
+// Files inside apps/web/config/features/checkout/ → @org/checkout
+// @org/platform is gone, because `only` replaces.
+// Use add: [checkout] to keep @org/platform.
 ```
+
+Rules run in the order you declare them, and each rule builds on the one before it:
+
+```typescript
+match("**/locales/**/*.json", { only: [i18n] });      // 1. locales → i18n
+match("**/locales/en-US/**/*.json", { add: [qa] });   // 2. en-US → i18n + qa
+```
+
+Reversing those two lines gives a different result, because the `only` rule would then discard `@org/qa`.
 
 ### How match patterns work
 
-Patterns starting with `**/` get scoped under each owned directory. The `**/` prefix is stripped and the rest is appended to the owned path:
+Patterns are anchored at the repository root.
 
 ```
-Pattern:    **/locales/**/*.json
-Owned path: libs/search
-Resolved:   libs/search/locales/**/*.json
+**/locales/**/*.json    matches locales at any depth
+src/**/*.test.ts        matches the root src directory only
+**/src/**/*.test.ts     matches src at any depth
 ```
 
-When there's a catch-all `*` owner, the pattern also stays global (`**/locales/**/*.json`), which covers any directory, including ones not declared in `own()`.
+A pattern with no glob characters acts as a directory prefix. `apps/web` matches `apps/web` and everything below it.
 
-The generator uses the filesystem to verify that resolved pattern paths actually exist. If `libs/search` doesn't have a `locales` directory, no rule is emitted for it. It also walks the filesystem to discover directories that match the pattern but weren't declared in `own()`. For those discovered directories, ownership is inherited from the most specific parent that was declared with `own()`.
+The generator reads the real files in your repository, works out the exact owner set for every file, then writes the smallest set of rules that reproduces those owners. It checks the result before writing. If a directory holds no matching file, no rule is emitted for it.
 
-### Specificity and ordering
+### Ordering
 
-The generated file is sorted by specificity (ascending). More specific rules appear later and win:
+The generated file is sorted so that more specific rules appear later and win under GitHub's last-match-wins evaluation:
 
 ```
 * @org/platform                              # catches everything
@@ -161,7 +167,7 @@ libs/search @org/search                      # more specific, wins for libs/sear
 libs/search/locales/**/*.json @org/i18n      # even more specific, wins for locale files
 ```
 
-When two match rules resolve to the same path, the more specific source pattern wins. Same specificity? Last declared wins.
+You do not need to reason about this ordering. The generator verifies the emitted file against the owners it resolved, and fails rather than write a file that disagrees.
 
 ## Descriptions
 

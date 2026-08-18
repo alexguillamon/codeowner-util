@@ -5,10 +5,10 @@
 # @org/team-a, @ci-bot
 libs/search @org/team-a @ci-bot
 
-# ── Match: **/.env* ──
-
-libs/search/.env* @org/security @ci-bot
-
 # ── Match: **/locales/**/*.json ──
 
-libs/search/locales/**/*.json @org/i18n @ci-bot
+**/locales/**/*.json @org/i18n @ci-bot
+
+# ── Match: **/.env* ──
+
+**/.env* @org/security @ci-bot

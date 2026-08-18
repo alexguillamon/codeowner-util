@@ -10,8 +10,8 @@ const security = team("@org/security");
 // Multiple direct own() declarations overlap with the same global only pattern.
 // teamA co-owns apps/web/config/settings/auth with platform,
 // teamB co-owns apps/admin/config/settings/auth with platform.
-// match(only: [security]) on **/settings/auth/** should preserve
-// the directly declared co-owners on each path independently.
+// match(only: [security]) on **/settings/auth/** discards both sets of
+// directly declared co-owners, because `only` replaces.
 const config: CodeOwnersConfig = {
   always: [bot],
   own: [

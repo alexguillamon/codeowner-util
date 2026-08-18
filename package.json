@@ -1,6 +1,6 @@
 {
   "name": "codeowners-util",
-  "version": "0.0.12",
+  "version": "0.1.0",
   "description": "Generate GitHub CODEOWNERS files from a typed config",
   "license": "MIT",
   "repository": {

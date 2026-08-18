@@ -7,4 +7,4 @@ stores @org/team-a
 
 # ── Match: **/locales/**/*.json ──
 
-stores/locales/**/*.json @org/i18n
+**/locales/**/*.json @org/i18n

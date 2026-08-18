@@ -10,5 +10,4 @@ libs/notifications @org/team-b @ci-bot
 
 # ── Match: **/.env* ──
 
-libs/search/.env* @org/security @ci-bot
-libs/notifications/.env* @org/security @ci-bot
+**/.env* @org/security @ci-bot

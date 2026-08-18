@@ -10,5 +10,4 @@ libs/auth @org/team-a @ci-bot
 
 # ── Match: **/locales/en-US/**/*.json ──
 
-**/locales/en-US/**/*.json @org/platform @org/i18n @ci-bot
 libs/auth/locales/en-US/**/*.json @org/team-a @org/i18n @ci-bot

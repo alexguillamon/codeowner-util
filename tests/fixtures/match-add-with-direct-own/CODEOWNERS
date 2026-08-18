@@ -12,4 +12,4 @@ apps/web/config/settings/auth @org/team-b @org/team-a @ci-bot
 # ── Match: **/settings/auth/** ──
 
 **/settings/auth/** @org/team-a @org/team-c @ci-bot
-apps/web/config/settings/auth/settings/auth/** @org/team-b @org/team-a @org/team-c @ci-bot
+apps/web/config/settings/auth/** @org/team-b @org/team-a @org/team-c @ci-bot

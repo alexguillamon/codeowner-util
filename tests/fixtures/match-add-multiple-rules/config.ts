@@ -12,7 +12,7 @@ const config: CodeOwnersConfig = {
   own: [own(teamA, "libs/search")],
   match: [
     match("**/locales/en-US/**/*.json", { add: [i18n] }),
-    match("src/**/*.test.ts", { add: [qa] }),
+    match("**/src/**/*.test.ts", { add: [qa] }),
   ],
 };
 
