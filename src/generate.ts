@@ -17,6 +17,7 @@ import {
   walkFiles,
   type FlatEntry,
 } from "./resolve.js";
+import { assertConfig } from "./validate.js";
 
 /**
  * Generate CODEOWNERS file content from a config.
@@ -33,6 +34,8 @@ export function generate(
   config: CodeOwnersConfig,
   options?: GenerateOptions,
 ): string {
+  assertConfig(config);
+
   const always = config.always ?? [];
   const rootDir = options?.rootDir ?? process.cwd();
   const fs = options?.fs ?? (nodeFs as unknown as FsLike);

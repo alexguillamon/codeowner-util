@@ -1,4 +1,5 @@
 import type { Team, OwnershipRule, MatchAdd, MatchOnly } from "./types.js";
+import { assertText, assertToken, assertTeams } from "./validate.js";
 
 /**
  * Registry of team descriptions, keyed by team handle.
@@ -8,6 +9,8 @@ export const teamDescriptions = new Map<string, string>();
 
 /** Create a team reference, with an optional description for documentation */
 export function team(name: string, description?: string): Team {
+  assertToken("team handle", name);
+  assertText("team description", description);
   if (description) {
     teamDescriptions.set(name, description);
   }
@@ -20,9 +23,14 @@ export function own(
   paths: string | readonly string[],
   description?: string,
 ): OwnershipRule {
+  const ownerList = Array.isArray(owners) ? owners : [owners];
+  const pathList = Array.isArray(paths) ? paths : [paths];
+  assertTeams(ownerList);
+  for (const path of pathList) assertToken("own() path", path);
+  assertText("own() description", description);
   return {
-    owners: Array.isArray(owners) ? owners : [owners],
-    paths: Array.isArray(paths) ? paths : [paths],
+    owners: ownerList,
+    paths: pathList,
     ...(description ? { description } : {}),
   };
 }
@@ -47,7 +55,10 @@ export function match(
     description?: string;
   },
 ): MatchAdd | MatchOnly {
+  assertToken("match() pattern", pattern);
+  assertText("match() description", opts.description);
   if ("only" in opts && opts.only) {
+    assertTeams(opts.only);
     return {
       pattern,
       only: opts.only,
@@ -55,6 +66,7 @@ export function match(
     };
   }
   if ("add" in opts && opts.add) {
+    assertTeams(opts.add);
     return {
       pattern,
       add: opts.add,

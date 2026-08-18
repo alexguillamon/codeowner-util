@@ -249,6 +249,23 @@ Use `--check` in CI to keep the CODEOWNERS file in sync:
 npx codeowners-util --check
 ```
 
+## Input validation
+
+A CODEOWNERS line separates fields by spaces, and `#` starts a comment. A team handle or path that carries whitespace, a `#`, or a line break can therefore add or truncate rules in the generated file.
+
+`team()`, `own()` and `match()` reject those values, and `generate()` checks the whole config again. That second check matters when you build a config from data instead of literals:
+
+```typescript
+// Throws, rather than writing "* @attacker" as an extra rule
+team("@org/platform\n* @attacker");
+own(platform, "apps/web\n* @attacker");
+
+// Also throws, even though it never calls team()
+generate({ own: [{ owners: ["@org/ok\n* @attacker"], paths: ["*"] }] });
+```
+
+Descriptions become comment lines, so they may contain spaces but not line breaks.
+
 ## Programmatic API
 
 ```typescript

@@ -7,7 +7,29 @@ import type { FsLike } from "./types.js";
  * `**\/` matches zero or more leading directories, `**` matches across
  * separators, `*` and `?` stay within a single segment.
  */
-export function globToRegExp(pattern: string): RegExp {
+/**
+ * Collapse repeated wildcards that mean the same thing.
+ *
+ * `**\/**\/x` matches exactly what `**\/x` matches, but it compiles to two
+ * nested optional groups. Each extra group doubles the work the engine does
+ * before it can reject a path, so a long run makes matching take minutes.
+ * Collapsing the run first keeps the compiled expression linear.
+ */
+function collapseWildcards(pattern: string): string {
+  let result = pattern;
+  let previous: string;
+  do {
+    previous = result;
+    result = result
+      .replace(/\*{3,}/g, "**")
+      .replace(/\*\*\/\*\*/g, "**")
+      .replace(/(?:\*\*\/)+/g, "**/");
+  } while (result !== previous);
+  return result;
+}
+
+export function globToRegExp(rawPattern: string): RegExp {
+  const pattern = collapseWildcards(rawPattern);
   let source = "^";
 
   for (let i = 0; i < pattern.length;) {
